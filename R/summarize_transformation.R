@@ -100,6 +100,15 @@ summarize_single_call <- function(expr) {
     args <- args[-1]
   }
 
+  # For tidyverse verbs the first positional argument is conventionally
+  # the data frame being operated on, and it appears as a node of its
+  # own in the graph, so including it in the summary would just repeat
+  # information already visible in the upstream edge.
+  if (fn %in% tidy_verbs && length(args) > 0) {
+    nms <- names(args) %||% rep("", length(args))
+    if (!nzchar(nms[[1]])) args <- args[-1]
+  }
+
   # Fetch the argument descriptor specific to this verb. The helper
   # returns "" when nothing informative can be said about the args.
   body <- describe_args(fn, args)

@@ -36,9 +36,17 @@ plot_dataflow <- function(graph) {
         .data$kind == "transform" ~ "#BBDEFB",
         TRUE ~ "#ECEFF1"
       ),
+      # Compose the multi-line label: target name, headline function,
+      # human summary of the transformation, and the column names of
+      # the resulting object (when we know them). `build_node_label`
+      # drops sections that are empty so sparse nodes stay compact.
+      label = purrr::pmap_chr(
+        list(.data$id, .data$call_fn, .data$summary, .data$columns),
+        build_node_label
+      ),
       # Assemble the Graphviz node line. `escape_label` handles the
-      # quoting / newline escaping so node labels can carry a
-      # line-break between the target name and the function name.
+      # quoting / newline escaping so the multi-line label renders
+      # correctly in Graphviz.
       dot = sprintf(
         '  "%s" [label="%s", shape=%s, style=filled, fillcolor="%s"];',
         .data$id,
@@ -90,4 +98,43 @@ escape_label <- function(x) {
   x |>
     stringr::str_replace_all('"', '\\\\"') |>
     stringr::str_replace_all("\n", "\\\\n")
+}
+
+# Compose a node's multi-line label from its parts. Sections with no
+# information are skipped so, for example, an "other" assignment with
+# no summary and no columns just shows its name. Columns are wrapped
+# across lines and truncated with a "... +N more" tail so wide tables
+# do not blow up the diagram.
+build_node_label <- function(id, call_fn, summary, columns) {
+  parts <- id
+  if (!is.na(call_fn) && nzchar(call_fn)) {
+    parts <- c(parts, call_fn)
+  }
+  if (!is.null(summary) && length(summary) == 1 && nzchar(summary)) {
+    parts <- c(parts, summary)
+  }
+  if (length(columns) > 0) {
+    parts <- c(parts, format_columns_line(columns))
+  }
+  paste(parts, collapse = "\n")
+}
+
+# Render a column list into one or two lines, capping the number of
+# names shown so the node stays readable. The cap is loose enough to
+# show most real tables in full while bounded enough to prevent a wide
+# table from dominating the diagram.
+format_columns_line <- function(columns, max_cols = 10L, per_line = 5L) {
+  n <- length(columns)
+  shown <- columns[seq_len(min(n, max_cols))]
+  # Group the shown names into chunks of `per_line` so a line break is
+  # inserted roughly every few columns.
+  chunks <- split(shown, ceiling(seq_along(shown) / per_line))
+  body <- paste(purrr::map_chr(chunks, paste, collapse = ", "),
+                collapse = "\n")
+  prefix <- "cols: "
+  if (n > max_cols) {
+    sprintf("%s%s\n(+%d more)", prefix, body, n - max_cols)
+  } else {
+    paste0(prefix, body)
+  }
 }
