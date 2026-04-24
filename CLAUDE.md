@@ -7,7 +7,8 @@ Rdataflow is an R package that, given an R object, reverse-engineers the data im
 ## Design guidance
 
 - Use tidyverse packages and syntax wherever possible (e.g. `dplyr`, `tidyr`, `purrr`, `readr`, `tibble`, `stringr`, `magrittr`/native pipe).
-- Follow the style and principles laid out in *R for Data Science* (https://r4ds.had.co.nz/). When in doubt on API design, naming, or idiom, defer to that book.
+- Follow the style and principles laid out in *R for Data Science* (https://r4ds.hadley.nz/). When in doubt on API design, naming, or idiom, defer to that book.
+- all code chunks should be commented explaining what they do and aim to achieve
 
 ## Git workflow
 
