@@ -14,7 +14,7 @@
 #'   source code.
 #'
 #' @return A tibble with columns `step`, `target`, `rhs_code`, `call_fn`,
-#'   `inputs` (list column of character vectors), and `kind`.
+#'   `inputs` (list column of character vectors), `summary`, and `kind`.
 #' @export
 parse_script <- function(script) {
   # Read the script from disk (if `script` is a path) or from memory
@@ -40,6 +40,7 @@ parse_script <- function(script) {
         rhs_code = character(),
         call_fn = character(),
         inputs = list(),
+        summary = character(),
         kind = character()
       ))
     }
@@ -50,15 +51,20 @@ parse_script <- function(script) {
     inputs <- extract_symbols(assignment$rhs)
     call_fn <- extract_call_fn(assignment$rhs)
 
-    # One row per assignment, carrying both machine-readable columns
-    # (`inputs`, `call_fn`, `kind`) and the raw RHS source code for
-    # display on the diagram / downstream inspection.
+    # Build a short human-readable description of what the RHS does;
+    # pipe chains are unpacked so each verb contributes to the summary.
+    summary_text <- summarize_transformation(assignment$rhs)
+
+    # One row per assignment, carrying machine-readable columns
+    # (`inputs`, `call_fn`, `kind`), a human `summary`, and the raw
+    # RHS source code for downstream display / inspection.
     tibble::tibble(
       step = i,
       target = assignment$target,
       rhs_code = paste(deparse(assignment$rhs), collapse = " "),
       call_fn = call_fn %||% NA_character_,
       inputs = list(inputs),
+      summary = summary_text,
       kind = classify_call(call_fn, inputs)
     )
   })
