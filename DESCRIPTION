@@ -1,0 +1,31 @@
+Package: Rdataflow
+Type: Package
+Title: Reverse-Engineer and Visualize Data Flow in R Scripts
+Version: 0.0.0.9000
+Authors@R: c(
+    person(
+      "Jasper", "Cain",
+      email = "jcainsecondemail@gmail.com",
+      role = c("aut", "cre")
+    )
+  )
+Description: Given an R object and the script that produced it, Rdataflow
+    traces back through the assignments and transformations that were applied
+    to the source data to create the object, and renders the resulting lineage
+    as a flow diagram.
+License: MIT + file LICENSE
+Encoding: UTF-8
+LazyData: true
+Roxygen: list(markdown = TRUE)
+RoxygenNote: 7.3.1
+Imports:
+    dplyr,
+    tibble,
+    purrr,
+    stringr,
+    rlang,
+    tidyr,
+    DiagrammeR
+Suggests:
+    testthat (>= 3.0.0),
+    readr
