@@ -15,17 +15,22 @@ build_dataflow_graph <- function(parsed) {
   # returned by parse_script(); stop early with a clear failure if not.
   stopifnot(tibble::is_tibble(parsed))
 
-  # Turn each parsed assignment into a graph node. The `label` combines
-  # the target name with the headline function so that diagram nodes
-  # read as "what was produced / how it was produced".
+  # Turn each parsed assignment into a graph node. We keep both the
+  # structural fields (id/step/kind/call_fn) and the human-readable
+  # summary so downstream renderers can surface as much detail as the
+  # diagram will accommodate.
   nodes <- parsed |>
     dplyr::transmute(
       id = .data$target,
       step = .data$step,
-      label = paste0(.data$target, "\n", dplyr::coalesce(.data$call_fn, "")),
       kind = .data$kind,
       rhs_code = .data$rhs_code,
-      call_fn = .data$call_fn
+      call_fn = .data$call_fn,
+      summary = .data$summary,
+      # `columns` is populated later (once we have an environment to
+      # look up objects in); initialise as an empty character vector
+      # so the list column's element type is stable.
+      columns = purrr::map(.data$target, function(.x) character())
     )
 
   # Set of names that correspond to assigned objects in this script —

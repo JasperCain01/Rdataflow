@@ -11,15 +11,23 @@
 #'   character vector of R source code.
 #' @param plot If `TRUE` (the default) return a flow diagram; otherwise
 #'   return the lineage graph as a list of `nodes`/`edges` tibbles.
+#' @param env Environment in which to look up object column names for
+#'   display on the diagram. Defaults to the caller's frame so users
+#'   who have already run the script get column annotations for free;
+#'   pass `NULL` to skip the lookup entirely.
 #'
-#' @return Either a `DiagrammeR` htmlwidget or a list of tibbles.
+#' @return Either a `DiagrammeR` htmlwidget or a list of tibbles. The
+#'   nodes tibble includes `summary` (the transformation description)
+#'   and `columns` (the names of the columns in the object, when it is
+#'   available in `env`).
 #' @export
 #'
 #' @examples
 #' \dontrun{
 #'   trace_dataflow(model_data, script = "analysis.R")
 #' }
-trace_dataflow <- function(object, script, plot = TRUE) {
+trace_dataflow <- function(object, script, plot = TRUE,
+                           env = parent.frame()) {
   # Capture the `object` argument without evaluating it so the user
   # can pass a bare symbol (`trace_dataflow(model_data, ...)`) without
   # needing the object to exist in the calling environment.
@@ -44,6 +52,12 @@ trace_dataflow <- function(object, script, plot = TRUE) {
   # Walk the DAG backwards from `target` so the returned graph only
   # contains nodes and edges that actually contribute to it.
   lineage <- trace_lineage(graph, target)
+
+  # Best-effort column annotation: if the user has already run the
+  # script, we look up each lineage node in `env` and attach the
+  # object's column names for display in the diagram. Missing objects
+  # simply get an empty column vector.
+  lineage <- attach_columns(lineage, env)
 
   # Default is to return a ready-to-view diagram; `plot = FALSE` is
   # useful for programmatic inspection or for writing tests.
