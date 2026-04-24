@@ -92,7 +92,8 @@ extract_call_fn <- function(expr) {
   # e.g. `x |> filter(...) |> mutate(...)` reports "mutate".
   pipe_ops <- c("|>", "%>%")
   while (is.call(expr) && length(expr) >= 3 &&
-         as.character(expr[[1]]) %in% pipe_ops) {
+           is.symbol(expr[[1]]) &&
+           as.character(expr[[1]]) %in% pipe_ops) {
     expr <- expr[[3]]
   }
 
