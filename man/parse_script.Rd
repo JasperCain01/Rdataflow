@@ -12,7 +12,7 @@ source code.}
 }
 \value{
 A tibble with columns \code{step}, \code{target}, \code{rhs_code}, \code{call_fn},
-\code{inputs} (list column of character vectors), and \code{kind}.
+\code{inputs} (list column of character vectors), \code{summary}, and \code{kind}.
 }
 \description{
 Reads an R script (or character vector of code) and returns a tibble with

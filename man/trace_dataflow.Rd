@@ -4,7 +4,7 @@
 \alias{trace_dataflow}
 \title{Trace and visualize the dataflow for an R object}
 \usage{
-trace_dataflow(object, script, plot = TRUE)
+trace_dataflow(object, script, plot = TRUE, env = parent.frame())
 }
 \arguments{
 \item{object}{The object whose lineage to trace. May be passed unquoted,
@@ -15,9 +15,16 @@ character vector of R source code.}
 
 \item{plot}{If \code{TRUE} (the default) return a flow diagram; otherwise
 return the lineage graph as a list of \code{nodes}/\code{edges} tibbles.}
+
+\item{env}{Environment in which to look up object column names for
+display on the diagram. Defaults to the caller's frame; pass
+\code{NULL} to skip the lookup entirely.}
 }
 \value{
-Either a \code{DiagrammeR} htmlwidget or a list of tibbles.
+Either a \code{DiagrammeR} htmlwidget or a list of tibbles. The nodes
+tibble includes \code{summary} (the transformation description) and
+\code{columns} (the names of the columns in the object, when it is
+available in \code{env}).
 }
 \description{
 Given an object and the script that produced it, parses the script, builds
