@@ -4,15 +4,21 @@
 \name{Rdataflow-package}
 \alias{Rdataflow}
 \alias{Rdataflow-package}
-\title{Rdataflow: Reverse-Engineer and Visualize Data Flow in R Scripts}
+\title{Rdataflow: Visualize Column-Level Data Flow of SQL Scripts}
 \description{
-Given an R object and the script that produced it, Rdataflow traces the
-assignments and transformations that led to the object and renders the
-lineage as a flow diagram.
+Rdataflow parses a SQL script (T-SQL / SQL Server first) and, using the
+column metadata of the referenced tables, builds a column-level data
+lineage model and renders it as a flow diagram.
 }
 \details{
-The high-level entry point is \code{\link[=trace_dataflow]{trace_dataflow()}}. Lower-level building
-blocks are \code{\link[=parse_script]{parse_script()}}, \code{\link[=build_dataflow_graph]{build_dataflow_graph()}}, and
-\code{\link[=plot_dataflow]{plot_dataflow()}}.
+The high-level entry point is \code{\link[=sql_dataflow]{sql_dataflow()}}. The pipeline is built from
+independently testable layers: schema resolution (\code{\link[=schema_from_list]{schema_from_list()}} /
+\code{\link[=schema_from_con]{schema_from_con()}}), SQL parsing (\code{\link[=parse_sql]{parse_sql()}}), lineage IR construction
+(\code{\link[=build_ir]{build_ir()}}), transformation classification, graph assembly, and
+rendering.
+}
+\author{
+\strong{Maintainer}: Jasper Cain \email{jcainsecondemail@gmail.com}
+
 }
 \keyword{internal}

@@ -1,6 +1,6 @@
 Package: Rdataflow
 Type: Package
-Title: Reverse-Engineer and Visualize Data Flow in R Scripts
+Title: Visualize Column-Level Data Flow of SQL Scripts
 Version: 0.0.0.9000
 Authors@R: c(
     person(
@@ -9,23 +9,26 @@ Authors@R: c(
       role = c("aut", "cre")
     )
   )
-Description: Given an R object and the script that produced it, Rdataflow
-    traces back through the assignments and transformations that were applied
-    to the source data to create the object, and renders the resulting lineage
-    as a flow diagram.
+Description: Parses a SQL script (T-SQL / SQL Server first) and, using the
+    column metadata of the referenced tables, builds a column-level data
+    lineage model: which columns each query selects, how tables are joined
+    (and on which keys), and what transformations are applied at each stage
+    (aggregations, date-diffs, counts, window functions, ...). The lineage
+    is rendered as a flow diagram in the style of column-level lineage tools.
 License: MIT + file LICENSE
 Encoding: UTF-8
-LazyData: true
 Roxygen: list(markdown = TRUE)
-RoxygenNote: 7.3.1
+RoxygenNote: 7.3.3
 Imports:
     dplyr,
     tibble,
     purrr,
     stringr,
     rlang,
-    tidyr,
-    DiagrammeR
+    tidyselect,
+    DiagrammeR,
+    reticulate
 Suggests:
     testthat (>= 3.0.0),
-    readr
+    DBI,
+    odbc
