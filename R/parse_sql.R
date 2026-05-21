@@ -54,15 +54,37 @@ load_py_module <- function() {
     ))
   }
 
-  # Prefer the installed location; fall back to the in-repo path.
-  path <- system.file("python", package = "Rdataflow")
-  if (!nzchar(path) || !file.exists(file.path(path, "rdataflow_sqlglot.py"))) {
-    path <- file.path("inst", "python")
-  }
-
+  path <- find_py_path()
   mod <- reticulate::import_from_path("rdataflow_sqlglot", path = path)
   .rdataflow_py$mod <- mod
   mod
+}
+
+# Locate the directory containing the bundled Python module. Prefer the
+# installed package location; otherwise walk up from the working directory
+# looking for inst/python (so the module is found under devtools::load_all(),
+# direct sourcing, or testthat, which runs from tests/testthat/).
+find_py_path <- function() {
+  module_file <- "rdataflow_sqlglot.py"
+
+  installed <- system.file("python", package = "Rdataflow")
+  if (nzchar(installed) && file.exists(file.path(installed, module_file))) {
+    return(installed)
+  }
+
+  # Walk up a bounded number of parent directories from the working dir.
+  dir <- normalizePath(getwd(), mustWork = FALSE)
+  for (i in seq_len(6L)) {
+    candidate <- file.path(dir, "inst", "python")
+    if (file.exists(file.path(candidate, module_file))) {
+      return(candidate)
+    }
+    parent <- dirname(dir)
+    if (identical(parent, dir)) break  # reached filesystem root
+    dir <- parent
+  }
+
+  rlang::abort("Could not locate the bundled 'rdataflow_sqlglot.py' module.")
 }
 
 #' Parse a SQL script into per-statement lineage information
