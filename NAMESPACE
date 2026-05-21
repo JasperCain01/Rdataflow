@@ -2,6 +2,8 @@
 
 export(build_graph)
 export(build_ir)
+export(graph_to_dot)
+export(plot_sqlflow)
 export(classify_transform)
 export(install_sqlglot)
 export(parse_sql)
