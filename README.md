@@ -16,8 +16,23 @@ and renders an interactive flow diagram in the RStudio Viewer.
 ## Installation
 
 ```r
-# Install from source (development version)
-devtools::install_github("jasper-cain/Rdataflow")
+# Install from GitHub (development version)
+devtools::install_github("JasperCain01/Rdataflow")
+```
+
+If you get a credentials error (`invalid gitcreds credentials in env var 'GITHUB_PAT_GITHUB_COM'`), an invalid token stored in your environment is interfering. Clear it and retry:
+
+```r
+Sys.unsetenv("GITHUB_PAT_GITHUB_COM")
+devtools::install_github("JasperCain01/Rdataflow")
+```
+
+Alternatively, install by cloning the repo and installing locally — this avoids GitHub authentication entirely:
+
+```r
+# In a terminal:
+# git clone https://github.com/JasperCain01/Rdataflow.git
+devtools::install("path/to/Rdataflow")
 ```
 
 Rdataflow requires the Python `sqlglot` library. Install it once after loading the package:
