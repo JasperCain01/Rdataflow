@@ -52,11 +52,14 @@
 #' @param show_col_edges If `TRUE` (default), draw column-level port-to-port
 #'   edges showing exact column lineage. If `FALSE`, draw structural
 #'   table→stage edges only, labelled with join types.
+#' @param show_legend If `TRUE` (default), append a colour-coding legend
+#'   cluster to the diagram explaining node header colours, column role
+#'   colours, transformation type colours, and edge styles.
 #'
 #' @return A `DiagrammeR` htmlwidget for display in RStudio, R Markdown, or
 #'   Shiny.
 #' @export
-plot_sqlflow <- function(graph, show_col_edges = TRUE) {
+plot_sqlflow <- function(graph, show_col_edges = TRUE, show_legend = TRUE) {
   if (!requireNamespace("DiagrammeR", quietly = TRUE)) {
     rlang::abort(paste(
       "Package 'DiagrammeR' is required.",
@@ -64,7 +67,9 @@ plot_sqlflow <- function(graph, show_col_edges = TRUE) {
     ))
   }
   stopifnot(inherits(graph, "rdataflow_graph"))
-  DiagrammeR::grViz(graph_to_dot(graph, show_col_edges = show_col_edges))
+  DiagrammeR::grViz(
+    graph_to_dot(graph, show_col_edges = show_col_edges, show_legend = show_legend)
+  )
 }
 
 #' Export the Graphviz DOT source for a dataflow graph
@@ -76,7 +81,7 @@ plot_sqlflow <- function(graph, show_col_edges = TRUE) {
 #' @inheritParams plot_sqlflow
 #' @return A length-1 character string of valid DOT code.
 #' @export
-graph_to_dot <- function(graph, show_col_edges = TRUE) {
+graph_to_dot <- function(graph, show_col_edges = TRUE, show_legend = TRUE) {
   stopifnot(inherits(graph, "rdataflow_graph"))
 
   # Generate one DOT node statement per table node and stage node.
@@ -100,8 +105,13 @@ graph_to_dot <- function(graph, show_col_edges = TRUE) {
     )
   }
 
-  paste(c(dot_preamble(), tbl_stmts, "", stg_stmts, "", edge_stmts, "}"),
-        collapse = "\n")
+  # Optional legend cluster appended before the closing brace.
+  legend_stmts <- if (isTRUE(show_legend)) dot_legend_subgraph() else character(0)
+
+  paste(
+    c(dot_preamble(), tbl_stmts, "", stg_stmts, "", edge_stmts, legend_stmts, "}"),
+    collapse = "\n"
+  )
 }
 
 # ---------------------------------------------------------------------------
@@ -316,6 +326,107 @@ build_temp_edge_stmts <- function(temp_edges) {
       row$from_node_id, row$to_node_id
     )
   })
+}
+
+# ---------------------------------------------------------------------------
+# Legend subgraph
+# ---------------------------------------------------------------------------
+
+# Build a Graphviz cluster subgraph containing a colour-coding legend.
+# Returns a character vector of DOT lines ready to splice into the graph body.
+dot_legend_subgraph <- function() {
+  # Section divider row inside the legend table.
+  legend_section <- function(label) {
+    sprintf(
+      paste0(
+        '<TR><TD BGCOLOR="#e0e0e0" ALIGN="LEFT">',
+        '<FONT POINT-SIZE="9"><B>%s</B></FONT>',
+        '</TD></TR>'
+      ),
+      label
+    )
+  }
+
+  # Colored swatch row — background is the visual indicator; font_color lets
+  # white text appear on dark swatches.
+  legend_swatch <- function(label, bg, font_color = "#222222") {
+    sprintf(
+      paste0(
+        '<TR><TD BGCOLOR="%s" ALIGN="LEFT">',
+        '<FONT POINT-SIZE="9" COLOR="%s">%s</FONT>',
+        '</TD></TR>'
+      ),
+      bg, font_color, label
+    )
+  }
+
+  # Edge-type row — colored text with ASCII dashes to suggest line style.
+  legend_edge <- function(label, color, dashed = FALSE) {
+    prefix <- if (dashed) "- -  " else "---  "
+    sprintf(
+      paste0(
+        '<TR><TD ALIGN="LEFT">',
+        '<FONT POINT-SIZE="9" COLOR="%s">%s%s</FONT>',
+        '</TD></TR>'
+      ),
+      color, prefix, label
+    )
+  }
+
+  rows <- c(
+    # Title
+    paste0(
+      '<TR><TD BGCOLOR="#555555" ALIGN="LEFT">',
+      '<FONT COLOR="white" POINT-SIZE="10"><B>Legend</B></FONT>',
+      '</TD></TR>'
+    ),
+
+    # Node header colours
+    legend_section("Node headers"),
+    legend_swatch("Physical table", .tbl_header_bg, "white"),
+    legend_swatch("CTE stage",      .cte_header_bg, "white"),
+    legend_swatch("Output stage",   .out_header_bg, "white"),
+
+    # Column role colours (table nodes)
+    legend_section("Column role (table nodes)"),
+    legend_swatch("Projected",       .col_used_bg),
+    legend_swatch("Join key only",   .col_key_bg),
+    legend_swatch("Projected + key", .col_both_bg),
+    legend_swatch("Unused",          .col_none_bg),
+
+    # Transformation type colours (stage nodes)
+    legend_section("Transformation (stage nodes)"),
+    legend_swatch("aggregate",   .transform_colors[["aggregate"]]),
+    legend_swatch("window",      .transform_colors[["window"]]),
+    legend_swatch("date",        .transform_colors[["date"]]),
+    legend_swatch("case",        .transform_colors[["case"]]),
+    legend_swatch("cast",        .transform_colors[["cast"]]),
+    legend_swatch("string",      .transform_colors[["string"]]),
+    legend_swatch("arithmetic",  .transform_colors[["arithmetic"]]),
+    legend_swatch("expression",  .transform_colors[["expression"]]),
+    legend_swatch("passthrough", .transform_colors[["passthrough"]]),
+
+    # Edge types
+    legend_section("Edges"),
+    legend_edge("Source / FROM",  "#888888", dashed = FALSE),
+    legend_edge("JOIN",           "#cc6600", dashed = FALSE),
+    legend_edge("CTE reference",  "#666666", dashed = TRUE),
+    legend_edge("#temp feed",     "#4477AA", dashed = TRUE),
+    legend_edge("Column lineage", "#4a90d9", dashed = TRUE)
+  )
+
+  table_html <- sprintf(
+    '<TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="3">%s</TABLE>',
+    paste(rows, collapse = "")
+  )
+
+  c(
+    "",
+    "  subgraph cluster_legend {",
+    '    graph [style=rounded color="#cccccc" bgcolor="#ffffff" label="" margin="8"]',
+    sprintf('    legend_node [label=<%s> shape=none margin="0"]', table_html),
+    "  }"
+  )
 }
 
 # ---------------------------------------------------------------------------

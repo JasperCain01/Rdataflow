@@ -60,7 +60,8 @@ test_that("graph_to_dot col-edge mode contains port-to-port edges", {
 test_that("graph_to_dot structural mode shows join-type labels", {
   skip_if_not(sqlglot_available(), "sqlglot not available")
   g   <- test_plot_ir()
-  dot <- graph_to_dot(g, show_col_edges = FALSE)
+  # Suppress legend so the colour check is not confused by legend content.
+  dot <- graph_to_dot(g, show_col_edges = FALSE, show_legend = FALSE)
   # LEFT JOIN should appear as an edge label
   expect_match(dot, "LEFT JOIN")
   # CTE edge label
@@ -88,4 +89,34 @@ test_that("port_id normalises column names to valid Graphviz identifiers", {
   expect_equal(port_id("order.id"),    "order_id")
   expect_equal(port_id("my col"),      "my_col")
   expect_equal(port_id("[bracketed]"), "_bracketed_")
+})
+
+test_that("graph_to_dot includes legend by default", {
+  skip_if_not(sqlglot_available(), "sqlglot not available")
+  g   <- test_plot_ir()
+  dot <- graph_to_dot(g)
+  expect_match(dot, "cluster_legend")
+  expect_match(dot, "legend_node")
+  # All key legend sections should be present
+  expect_match(dot, "Node headers")
+  expect_match(dot, "Column role")
+  expect_match(dot, "Transformation")
+  expect_match(dot, "Edges")
+})
+
+test_that("graph_to_dot omits legend when show_legend = FALSE", {
+  skip_if_not(sqlglot_available(), "sqlglot not available")
+  g   <- test_plot_ir()
+  dot <- graph_to_dot(g, show_legend = FALSE)
+  expect_false(grepl("cluster_legend", dot, fixed = TRUE))
+})
+
+test_that("show_legend parameter passes through sql_dataflow to plot", {
+  skip_if_not(sqlglot_available(), "sqlglot not available")
+  g   <- test_plot_ir()
+  # graph_to_dot with show_legend = FALSE produces no legend
+  dot_no  <- graph_to_dot(g, show_legend = FALSE)
+  dot_yes <- graph_to_dot(g, show_legend = TRUE)
+  expect_false(grepl("Legend", dot_no, fixed = TRUE))
+  expect_true(grepl("Legend", dot_yes, fixed = TRUE))
 })

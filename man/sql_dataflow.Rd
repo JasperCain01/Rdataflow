@@ -9,7 +9,8 @@ sql_dataflow(
   schema = NULL,
   dialect = "tsql",
   show_col_edges = TRUE,
-  show_unused_cols = TRUE
+  show_unused_cols = TRUE,
+  show_legend = TRUE
 )
 }
 \arguments{
@@ -35,6 +36,10 @@ catalog column, with unused ones rendered in white. If \code{FALSE}, only
 columns that are projected or used as join keys are shown, producing a
 more compact diagram. Useful when the schema has many columns and the
 diagram becomes too tall to view comfortably.}
+
+\item{show_legend}{If \code{TRUE} (default), a colour-coding legend is appended
+to the diagram, explaining node header colours, column role colours,
+transformation type colours, and edge styles.}
 }
 \value{
 A \code{DiagrammeR} / htmlwidget object. Displays automatically in the

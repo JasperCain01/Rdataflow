@@ -4,7 +4,7 @@
 \alias{plot_sqlflow}
 \title{Render a SQL dataflow graph}
 \usage{
-plot_sqlflow(graph, show_col_edges = TRUE)
+plot_sqlflow(graph, show_col_edges = TRUE, show_legend = TRUE)
 }
 \arguments{
 \item{graph}{An \code{rdataflow_graph} produced by \code{\link[=build_graph]{build_graph()}}.}
@@ -12,6 +12,10 @@ plot_sqlflow(graph, show_col_edges = TRUE)
 \item{show_col_edges}{If \code{TRUE} (default), draw column-level port-to-port
 edges showing exact column lineage. If \code{FALSE}, draw structural
 table→stage edges only, labelled with join types.}
+
+\item{show_legend}{If \code{TRUE} (default), append a colour-coding legend
+cluster to the diagram explaining node header colours, column role
+colours, transformation type colours, and edge styles.}
 }
 \value{
 A \code{DiagrammeR} htmlwidget for display in RStudio, R Markdown, or
