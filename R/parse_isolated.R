@@ -101,14 +101,22 @@ parse_one_select_isolated <- function(sql, schema = NULL, dialect = "tsql",
     # The third element of the returned named vector is the result channel.
     status <- sess$poll_io(timeout_ms)
     if (!identical(unname(status[["process"]]), "ready")) {
-      if (!sess$is_alive()) reset_isolated_session()
+      # Always reset on timeout regardless of is_alive(). Returning without
+      # calling read() leaves the session's busy flag set, which causes every
+      # subsequent sess$call() to throw "R session busy" and cascade failures
+      # across all remaining statements.
+      reset_isolated_session()
       skipped_log <<- c(skipped_log, "Child timed out")
       return(list(result = NULL, skipped_log = skipped_log))
     }
     sess$read()
   }, error = function(e) {
     msg <- conditionMessage(e)
-    if (!sess$is_alive()) reset_isolated_session()
+    # Always reset on any error — the session state is unknown. In particular,
+    # "R session busy" (thrown when call() is invoked before the previous
+    # result is read) will cascade to every subsequent statement unless we
+    # reset here to give the next call a clean session.
+    reset_isolated_session()
     skipped_log <<- c(skipped_log, paste0("Child error: ", msg))
     NULL
   })
@@ -120,7 +128,8 @@ parse_one_select_isolated <- function(sql, schema = NULL, dialect = "tsql",
     }
     msg <- if (!is.null(raw$error)) conditionMessage(raw$error) else
       paste0("child returned code ", raw$code)
-    if (!sess$is_alive()) reset_isolated_session()
+    # Always reset on non-200 result — a failed child may leave partial state.
+    reset_isolated_session()
     skipped_log <- c(skipped_log, paste0("Child error: ", msg))
     return(list(result = NULL, skipped_log = skipped_log))
   }
