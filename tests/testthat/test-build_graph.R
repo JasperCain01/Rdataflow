@@ -130,3 +130,50 @@ test_that("build_graph works without a schema (no crash, fewer columns)", {
   orders_node <- g$table_nodes[g$table_nodes$table == "orders", ]
   expect_lte(nrow(orders_node$columns[[1]]), 3)  # fewer than catalog total
 })
+
+test_that("temp_edges connects producer stage to consumer stage across statements", {
+  skip_if_not(sqlglot_available(), "sqlglot not available")
+
+  # Two-statement script: first SELECT INTO #t, then SELECT FROM #t.
+  sql <- paste(
+    "SELECT id, name INTO #patients FROM dbo.source_patients;",
+    "SELECT p.id, p.name FROM #patients p"
+  )
+  schema <- schema_from_list(list(
+    "dbo.source_patients" = c(id = "INT", name = "VARCHAR")
+  ))
+
+  ir <- classify_transform(build_ir(parse_sql(sql, schema = schema)))
+  g  <- build_graph(ir, schema = schema)
+
+  # The first statement produces #patients — it should appear as a stage node,
+  # NOT as a physical table node.
+  expect_equal(nrow(g$table_nodes[g$table_nodes$table == "#patients", ]), 0L)
+
+  # There should be one temp_edge connecting the producer stage to the consumer.
+  expect_equal(nrow(g$temp_edges), 1L)
+
+  # The producer stage has output_table "#patients".
+  producer <- g$stage_nodes[
+    !is.na(g$stage_nodes$output_table) &
+      g$stage_nodes$output_table == "#patients", ,
+    drop = FALSE
+  ]
+  expect_equal(nrow(producer), 1L)
+
+  expect_equal(g$temp_edges$from_node_id, producer$node_id)
+})
+
+test_that("show_unused_cols = FALSE hides unreferenced table columns", {
+  skip_if_not(sqlglot_available(), "sqlglot not available")
+
+  g <- build_graph(test_graph_ir(), schema = test_graph_schema(),
+                   show_unused_cols = FALSE)
+
+  # orders.order_id is never projected or used as a key — should be hidden.
+  orders_node <- g$table_nodes[g$table_nodes$table == "orders", ]
+  expect_false("order_id" %in% orders_node$columns[[1]]$col_name)
+
+  # orders.customer_id IS used (join key + projected) — should appear.
+  expect_true("customer_id" %in% orders_node$columns[[1]]$col_name)
+})

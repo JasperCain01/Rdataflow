@@ -95,7 +95,8 @@ graph_to_dot <- function(graph, show_col_edges = TRUE) {
   } else {
     c(
       build_source_edge_stmts(graph$source_edges),
-      build_cte_edge_stmts(graph$cte_edges)
+      build_cte_edge_stmts(graph$cte_edges),
+      build_temp_edge_stmts(graph$temp_edges)
     )
   }
 
@@ -299,6 +300,19 @@ build_cte_edge_stmts <- function(cte_edges) {
     row <- cte_edges[i, ]
     sprintf(
       '  %s -> %s [style=dashed color="#666666" label="CTE" fontcolor="#666666"]',
+      row$from_node_id, row$to_node_id
+    )
+  })
+}
+
+# Build DOT edge statements for temp-table producer→consumer stage connections.
+# Uses a distinct style from CTE edges so the two are visually distinguishable.
+build_temp_edge_stmts <- function(temp_edges) {
+  if (is.null(temp_edges) || nrow(temp_edges) == 0) return(character(0))
+  purrr::map_chr(seq_len(nrow(temp_edges)), function(i) {
+    row <- temp_edges[i, ]
+    sprintf(
+      '  %s -> %s [style=dashed color="#4477AA" label="#temp" fontcolor="#4477AA"]',
       row$from_node_id, row$to_node_id
     )
   })

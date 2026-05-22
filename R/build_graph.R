@@ -6,13 +6,15 @@
 # between them. This intermediate structure is consumed by plot_sqlflow()
 # (Phase 6) which turns it into Graphviz DOT for rendering.
 #
-# The graph holds four tibbles:
+# The graph holds five tibbles:
 #
 #   table_nodes  - one row per physical source table (deduped across all stages)
 #   stage_nodes  - one row per CTE / output stage
 #   source_edges - table→stage or CTE→stage structural connections (with join
 #                  type and key expressions for physical-table joins)
-#   cte_edges    - CTE stage → downstream stage connections
+#   cte_edges    - CTE stage → downstream stage connections (within a statement)
+#   temp_edges   - temp-table producer stage → consumer stage connections (cross-
+#                  statement; mirrors cte_edges for multi-statement scripts)
 #   col_edges    - column-level lineage: source-table/CTE port → stage output port
 #
 # Column sub-tibbles
@@ -44,6 +46,7 @@ build_graph <- function(ir, schema = NULL, show_unused_cols = TRUE) {
   stg_nodes  <- make_stage_nodes(ir)
   src_edges  <- make_source_edges(ir, tbl_nodes, stg_nodes)
   cte_edges  <- make_cte_edges(ir, stg_nodes)
+  temp_edges <- make_temp_edges(ir, stg_nodes)
   col_edges  <- make_col_edges(ir, tbl_nodes, stg_nodes)
 
   structure(
@@ -52,6 +55,7 @@ build_graph <- function(ir, schema = NULL, show_unused_cols = TRUE) {
       stage_nodes  = stg_nodes,
       source_edges = src_edges,
       cte_edges    = cte_edges,
+      temp_edges   = temp_edges,
       col_edges    = col_edges
     ),
     class = "rdataflow_graph"
@@ -62,16 +66,30 @@ build_graph <- function(ir, schema = NULL, show_unused_cols = TRUE) {
 # Node builders
 # ---------------------------------------------------------------------------
 
-# Build one row per unique physical source table. CTE names are excluded
-# because they become stage nodes, not table nodes.
+# Build one row per unique physical source table. CTE names and prior-stage
+# output_table names (temp tables produced by earlier SELECT INTO / INSERT
+# SELECT statements) are excluded because they become stage nodes, not table
+# nodes. This is the cross-statement analogue of the CTE exclusion.
 make_table_nodes <- function(ir, schema, show_unused_cols = TRUE) {
   # Lower-cased CTE names for quick membership testing.
   cte_names <- tolower(ir$stages$name[ir$stages$role == "cte" & !is.na(ir$stages$name)])
 
+  # Lower-cased output_table names from any stage — these are temp tables (or
+  # other produced tables) that are sources in later stages. Treating them as
+  # physical table nodes would create disconnected boxes instead of edges.
+  # sqlglot strips '#' from #temp names in source references, so we exclude
+  # both the raw name ("#patients") and the stripped form ("patients").
+  raw_produced <- tolower(
+    ir$stages$output_table[!is.na(ir$stages$output_table) & nzchar(ir$stages$output_table)]
+  )
+  produced_names <- unique(c(raw_produced, sub("^#", "", raw_produced)))
+
+  exclude_names <- unique(c(cte_names, produced_names))
+
   # Unique physical source tables (first occurrence wins for the catalog/schema
   # prefix; later stages referencing the same table leaf name are de-duped).
   phys <- ir$sources |>
-    dplyr::filter(!is.na(table), !tolower(table) %in% cte_names) |>
+    dplyr::filter(!is.na(table), !tolower(table) %in% exclude_names) |>
     dplyr::distinct(table, .keep_all = TRUE)
 
   if (nrow(phys) == 0) {
@@ -295,6 +313,60 @@ make_cte_edges <- function(ir, stg_nodes) {
   dplyr::distinct(dplyr::bind_rows(rows))
 }
 
+# Cross-statement temp-table edges: connects the output stage that produced a
+# temp table to each downstream stage that reads from it. Mirrors make_cte_edges()
+# but operates on output_table names (which span statement boundaries) rather
+# than CTE names (which are scoped within one statement).
+make_temp_edges <- function(ir, stg_nodes) {
+  # Stages that have a non-empty output_table are temp-table producers.
+  producer_stages <- stg_nodes[
+    !is.na(stg_nodes$output_table) & nzchar(stg_nodes$output_table), ,
+    drop = FALSE
+  ]
+  if (nrow(producer_stages) == 0L) {
+    return(tibble::tibble(from_node_id = character(), to_node_id = character()))
+  }
+
+  # Map lower-cased output_table name → producer node_id.
+  # sqlglot strips '#' from #temp names in FROM references, so register both
+  # "#patients" and "patients" as keys for the same producer node.
+  raw_names <- tolower(producer_stages$output_table)
+  stripped_names <- sub("^#", "", raw_names)
+  prod_node_by_tbl <- c(
+    as.list(stats::setNames(producer_stages$node_id, raw_names)),
+    as.list(stats::setNames(producer_stages$node_id, stripped_names))
+  )
+  stg_node_by_id <- as.list(
+    stats::setNames(stg_nodes$node_id, as.character(stg_nodes$stage_id))
+  )
+
+  rows <- list()
+  for (i in seq_len(nrow(ir$sources))) {
+    src <- ir$sources[i, ]
+    if (is.na(src$table) || !nzchar(src$table)) next
+
+    from_node <- prod_node_by_tbl[[tolower(src$table)]]
+    if (is.null(from_node)) next
+
+    to_node <- stg_node_by_id[[as.character(src$stage_id)]]
+    if (is.null(to_node)) next
+
+    # Don't self-loop: a stage that SELECT INTOs its own output_table would
+    # already be in cte_edges; skip here.
+    if (identical(from_node, to_node)) next
+
+    rows[[length(rows) + 1L]] <- tibble::tibble(
+      from_node_id = from_node,
+      to_node_id   = to_node
+    )
+  }
+
+  if (length(rows) == 0L) {
+    return(tibble::tibble(from_node_id = character(), to_node_id = character()))
+  }
+  dplyr::distinct(dplyr::bind_rows(rows))
+}
+
 # Column-level lineage edges: one row per (source column, output column) pair
 # traced through proj_sources. The source may be a physical table node or an
 # upstream CTE stage node; both are looked up by the src_table name.
@@ -306,9 +378,24 @@ make_col_edges <- function(ir, tbl_nodes, stg_nodes) {
     ))
   }
 
-  cte_names        <- tolower(stg_nodes$name[stg_nodes$role == "cte" & !is.na(stg_nodes$name)])
+  # CTE names — scoped within a statement.
+  cte_names <- tolower(stg_nodes$name[stg_nodes$role == "cte" & !is.na(stg_nodes$name)])
+  # Temp-table output names — produced by earlier statements.
+  # Register both "#patients" and "patients" (sqlglot strips '#' in FROM refs).
+  raw_temp <- tolower(
+    stg_nodes$output_table[!is.na(stg_nodes$output_table) & nzchar(stg_nodes$output_table)]
+  )
+  temp_names <- unique(c(raw_temp, sub("^#", "", raw_temp)))
+
   stg_node_by_id   <- as.list(stats::setNames(stg_nodes$node_id, as.character(stg_nodes$stage_id)))
   stg_node_by_name <- as.list(stats::setNames(stg_nodes$node_id, tolower(stg_nodes$name)))
+  # For temp-table lookups, index by both raw and stripped output_table names.
+  raw_outtbl <- tolower(dplyr::coalesce(stg_nodes$output_table, ""))
+  stripped_outtbl <- sub("^#", "", raw_outtbl)
+  stg_node_by_outtbl <- c(
+    as.list(stats::setNames(stg_nodes$node_id, raw_outtbl)),
+    as.list(stats::setNames(stg_nodes$node_id, stripped_outtbl))
+  )
   tbl_node_by_name <- as.list(stats::setNames(tbl_nodes$node_id, tolower(tbl_nodes$table)))
 
   rows <- list()
@@ -322,6 +409,8 @@ make_col_edges <- function(ir, tbl_nodes, stg_nodes) {
     src_lower <- tolower(row$src_table)
     from_node <- if (src_lower %in% cte_names) {
       stg_node_by_name[[src_lower]]
+    } else if (src_lower %in% temp_names) {
+      stg_node_by_outtbl[[src_lower]]
     } else {
       tbl_node_by_name[[src_lower]]
     }
@@ -407,9 +496,10 @@ graph_node_id <- function(...) {
 #' @export
 print.rdataflow_graph <- function(x, ...) {
   cat(sprintf(
-    "<rdataflow_graph: %d table nodes, %d stage nodes, %d source edges, %d cte edges, %d col edges>\n",
+    paste0("<rdataflow_graph: %d table nodes, %d stage nodes, %d source edges,",
+           " %d cte edges, %d temp edges, %d col edges>\n"),
     nrow(x$table_nodes), nrow(x$stage_nodes),
-    nrow(x$source_edges), nrow(x$cte_edges), nrow(x$col_edges)
+    nrow(x$source_edges), nrow(x$cte_edges), nrow(x$temp_edges), nrow(x$col_edges)
   ))
   invisible(x)
 }
