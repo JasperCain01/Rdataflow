@@ -79,9 +79,12 @@ sql_dataflow(sql, schema = s)
 ## Reading a script from a file
 
 ```r
-sql <- readLines("path/to/my_script.sql", warn = FALSE)
+sql <- read_sql("path/to/my_script.sql")
 sql_dataflow(sql, schema = s)
 ```
+
+`read_sql()` handles the `"incomplete final line"` warning that `readLines()`
+produces when a SQL file ends with `;` but no trailing newline.
 
 ## Live database connection (SQL Server via odbc)
 
@@ -91,7 +94,7 @@ library(odbc)
 
 con <- dbConnect(odbc(), dsn = "my_dsn")
 s   <- schema_from_con(con)          # reads INFORMATION_SCHEMA.COLUMNS
-sql_dataflow(readLines("report.sql"), schema = s)
+sql_dataflow(read_sql("report.sql"), schema = s)
 dbDisconnect(con)
 ```
 

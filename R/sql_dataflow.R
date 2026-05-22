@@ -67,6 +67,21 @@
 #' sql_dataflow(readLines("my_script.sql", warn = FALSE), schema = s)
 #' DBI::dbDisconnect(con)
 #' }
+#' Read a SQL script from a file
+#'
+#' A convenience wrapper around [readLines()] that suppresses the
+#' `"incomplete final line"` warning produced when a SQL file does not end
+#' with a newline (common when the last character is a `;`), and collapses
+#' the result into a single string ready for [sql_dataflow()].
+#'
+#' @param path Path to a `.sql` file.
+#' @return A length-1 character string containing the full SQL script.
+#' @seealso [sql_dataflow()]
+#' @export
+read_sql <- function(path) {
+  paste(readLines(path, warn = FALSE), collapse = "\n")
+}
+
 #' @export
 sql_dataflow <- function(sql, schema = NULL, dialect = "tsql",
                          show_col_edges = TRUE) {
