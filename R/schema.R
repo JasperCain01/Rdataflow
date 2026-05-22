@@ -72,8 +72,9 @@ schema_from_list <- function(tables) {
   }
 
   # Expand every table entry into a tibble of one row per column, then stack
-  # them. purrr::imap_dfr passes both the column spec and the table name.
-  columns <- purrr::imap_dfr(tables, function(cols, table_id) {
+  # them. imap passes both the column spec and the table name; list_rbind()
+  # combines the per-table tibbles into one.
+  columns <- purrr::imap(tables, function(cols, table_id) {
     # Split the (possibly qualified, possibly bracketed) identifier into its
     # catalog / schema / table parts.
     parts <- parse_table_identifier(table_id)
@@ -98,7 +99,7 @@ schema_from_list <- function(tables) {
       # Ordinal position is just the order the columns were given in.
       ordinal = seq_along(col_names)
     )
-  })
+  }) |> purrr::list_rbind()
 
   new_schema(columns)
 }

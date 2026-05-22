@@ -82,7 +82,7 @@ summarize_stage_transforms <- function(ir) {
   group_by <- ir$group_by
 
   # Iterate stages in IR order so the summary aligns with the stage table.
-  purrr::map_dfr(ir$stages$stage_id, function(sid) {
+  purrr::map(ir$stages$stage_id, function(sid) {
     proj <- projections[projections$stage_id == sid, , drop = FALSE]
     grp <- group_by[group_by$stage_id == sid, , drop = FALSE]
 
@@ -105,7 +105,7 @@ summarize_stage_transforms <- function(ir) {
       functions = list(unique(funcs[funcs %in% c(agg_fns, date_fns)])),
       label = build_stage_label(types, funcs, grp$expr)
     )
-  })
+  }) |> purrr::list_rbind()
 }
 
 # Compose the flow-line box text for a stage from its projection categories,

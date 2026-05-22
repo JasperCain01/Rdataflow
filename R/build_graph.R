@@ -77,7 +77,7 @@ make_table_nodes <- function(ir, schema) {
     ))
   }
 
-  purrr::map_dfr(seq_len(nrow(phys)), function(i) {
+  purrr::map(seq_len(nrow(phys)), function(i) {
     src <- phys[i, ]
     tbl <- src$table
 
@@ -120,7 +120,7 @@ make_table_nodes <- function(ir, schema) {
       table   = tbl,
       columns = list(columns_tbl)
     )
-  })
+  }) |> purrr::list_rbind()
 }
 
 # Build one row per stage (CTE or output). Each stage node carries its output
@@ -129,7 +129,7 @@ make_table_nodes <- function(ir, schema) {
 make_stage_nodes <- function(ir) {
   has_transforms <- "stage_transforms" %in% names(ir) && !is.null(ir$stage_transforms)
 
-  purrr::map_dfr(seq_len(nrow(ir$stages)), function(i) {
+  purrr::map(seq_len(nrow(ir$stages)), function(i) {
     stg <- ir$stages[i, ]
     sid <- stg$stage_id
 
@@ -166,7 +166,7 @@ make_stage_nodes <- function(ir) {
       transform_label = transform_label,
       columns         = list(columns_tbl)
     )
-  })
+  }) |> purrr::list_rbind()
 }
 
 # ---------------------------------------------------------------------------
