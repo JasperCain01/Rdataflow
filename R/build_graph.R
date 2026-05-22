@@ -127,6 +127,22 @@ make_table_nodes <- function(ir, schema) {
 # columns with their transformation types and a human-readable label that
 # summarises the stage's transformations (set by classify_transform()).
 make_stage_nodes <- function(ir) {
+  # Guard: no stages → return an empty tibble with the correct schema.
+  # purrr::list_rbind(list()) returns NULL (not an empty tibble), which causes
+  # downstream setNames() calls to fail with "attempt to set an attribute on NULL".
+  if (nrow(ir$stages) == 0) {
+    return(tibble::tibble(
+      node_id         = character(),
+      stage_id        = integer(),
+      name            = character(),
+      role            = character(),
+      output_table    = character(),
+      display_name    = character(),
+      transform_label = character(),
+      columns         = list()
+    ))
+  }
+
   has_transforms <- "stage_transforms" %in% names(ir) && !is.null(ir$stage_transforms)
 
   purrr::map(seq_len(nrow(ir$stages)), function(i) {
