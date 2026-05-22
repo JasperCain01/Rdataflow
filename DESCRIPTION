@@ -27,7 +27,8 @@ Imports:
     purrr (>= 1.0.0),
     stringr (>= 1.5.0),
     rlang (>= 1.1.0),
-    reticulate
+    reticulate,
+    callr
 Suggests:
     testthat (>= 3.0.0),
     DiagrammeR,
