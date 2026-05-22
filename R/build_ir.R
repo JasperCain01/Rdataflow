@@ -143,12 +143,14 @@ build_ir <- function(parsed) {
   )
 }
 
-# Build an alias -> table named character vector from a stage's sources.
+# Build an alias -> table named list from a stage's sources.
+# Must be a list (not a named character vector) so that [[alias]] returns NULL
+# for a missing key rather than throwing "subscript out of bounds".
 source_alias_map <- function(srcs) {
-  if (length(srcs) == 0) return(stats::setNames(character(), character()))
+  if (length(srcs) == 0) return(list())
   aliases <- vapply(srcs, function(s) scalar_chr(s$alias), character(1))
-  tables <- vapply(srcs, function(s) scalar_chr(s$table), character(1))
-  stats::setNames(tables, aliases)
+  tables  <- vapply(srcs, function(s) scalar_chr(s$table),  character(1))
+  as.list(stats::setNames(tables, aliases))
 }
 
 # Resolve a source alias to its table name, falling back to the alias itself
