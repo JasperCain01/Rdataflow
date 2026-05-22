@@ -54,6 +54,11 @@ read_sql <- function(path) {
 #' @param show_col_edges If `TRUE` (default), edges connect individual source
 #'   columns to the output columns they feed (port-to-port). If `FALSE`, only
 #'   structural table→stage edges are drawn, labelled with join type.
+#' @param show_unused_cols If `TRUE` (default), table nodes display every
+#'   catalog column, with unused ones rendered in white. If `FALSE`, only
+#'   columns that are projected or used as join keys are shown, producing a
+#'   more compact diagram. Useful when the schema has many columns and the
+#'   diagram becomes too tall to view comfortably.
 #'
 #' @return A `DiagrammeR` / htmlwidget object. Displays automatically in the
 #'   RStudio Viewer, R Markdown, and Shiny. Call [graph_to_dot()] on the
@@ -84,6 +89,15 @@ read_sql <- function(path) {
 #'   schema = s
 #' )
 #'
+#' # Compact view: hide catalog columns not referenced in the query
+#' sql_dataflow(
+#'   "SELECT customer_id, SUM(amount) AS total
+#'    FROM dbo.orders
+#'    GROUP BY customer_id",
+#'   schema = s,
+#'   show_unused_cols = FALSE
+#' )
+#'
 #' # With a live database connection (SQL Server via odbc)
 #' con <- DBI::dbConnect(odbc::odbc(), dsn = "my_dsn")
 #' s   <- schema_from_con(con)
@@ -91,7 +105,7 @@ read_sql <- function(path) {
 #' DBI::dbDisconnect(con)
 #' }
 sql_dataflow <- function(sql, schema = NULL, dialect = "tsql",
-                         show_col_edges = TRUE) {
+                         show_col_edges = TRUE, show_unused_cols = TRUE) {
   stopifnot(is.character(sql), length(sql) >= 1L)
 
   # Collapse multi-element vectors (e.g. from readLines()) into one string.
@@ -101,6 +115,7 @@ sql_dataflow <- function(sql, schema = NULL, dialect = "tsql",
   parsed     <- parse_sql(sql, schema = schema, dialect = dialect)
   ir         <- build_ir(parsed)
   classified <- classify_transform(ir)
-  graph      <- build_graph(classified, schema = schema)
+  graph      <- build_graph(classified, schema = schema,
+                            show_unused_cols = show_unused_cols)
   plot_sqlflow(graph, show_col_edges = show_col_edges)
 }

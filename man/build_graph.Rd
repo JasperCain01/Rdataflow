@@ -4,7 +4,7 @@
 \alias{build_graph}
 \title{Build the flow graph from a lineage IR}
 \usage{
-build_graph(ir, schema = NULL)
+build_graph(ir, schema = NULL, show_unused_cols = TRUE)
 }
 \arguments{
 \item{ir}{An \code{rdataflow_ir} (see \code{\link[=build_ir]{build_ir()}}). Passing it through
@@ -14,6 +14,11 @@ but it is not required.}
 \item{schema}{An optional \code{rdataflow_schema} (see \code{\link[=schema_from_list]{schema_from_list()}} /
 \code{\link[=schema_from_con]{schema_from_con()}}). When supplied table nodes list \emph{all} catalog columns
 with used/key flags; without it, only columns seen in the query are shown.}
+
+\item{show_unused_cols}{If \code{TRUE} (default), table nodes display every
+catalog column, with unused ones rendered in white. If \code{FALSE}, only
+columns that are projected or used as join keys are shown, producing a
+more compact diagram.}
 }
 \value{
 An object of class \code{rdataflow_graph} (a named list of tibbles; see

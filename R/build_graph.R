@@ -28,15 +28,19 @@
 #' @param schema An optional `rdataflow_schema` (see [schema_from_list()] /
 #'   [schema_from_con()]). When supplied table nodes list *all* catalog columns
 #'   with used/key flags; without it, only columns seen in the query are shown.
+#' @param show_unused_cols If `TRUE` (default), table nodes display every
+#'   catalog column, with unused ones rendered in white. If `FALSE`, only
+#'   columns that are projected or used as join keys are shown, producing a
+#'   more compact diagram.
 #'
 #' @return An object of class `rdataflow_graph` (a named list of tibbles; see
 #'   the file header for the full schema).
 #' @export
-build_graph <- function(ir, schema = NULL) {
+build_graph <- function(ir, schema = NULL, show_unused_cols = TRUE) {
   stopifnot(inherits(ir, "rdataflow_ir"))
   if (!is.null(schema)) stopifnot(inherits(schema, "rdataflow_schema"))
 
-  tbl_nodes  <- make_table_nodes(ir, schema)
+  tbl_nodes  <- make_table_nodes(ir, schema, show_unused_cols)
   stg_nodes  <- make_stage_nodes(ir)
   src_edges  <- make_source_edges(ir, tbl_nodes, stg_nodes)
   cte_edges  <- make_cte_edges(ir, stg_nodes)
@@ -60,7 +64,7 @@ build_graph <- function(ir, schema = NULL) {
 
 # Build one row per unique physical source table. CTE names are excluded
 # because they become stage nodes, not table nodes.
-make_table_nodes <- function(ir, schema) {
+make_table_nodes <- function(ir, schema, show_unused_cols = TRUE) {
   # Lower-cased CTE names for quick membership testing.
   cte_names <- tolower(ir$stages$name[ir$stages$role == "cte" & !is.na(ir$stages$name)])
 
@@ -113,6 +117,12 @@ make_table_nodes <- function(ir, schema) {
       used     = tolower(col_names) %in% used_set,
       is_key   = tolower(col_names) %in% key_set
     )
+
+    # When show_unused_cols = FALSE, drop columns that are neither projected
+    # nor used as join keys — keeps the diagram compact for wide tables.
+    if (!show_unused_cols) {
+      columns_tbl <- columns_tbl[columns_tbl$used | columns_tbl$is_key, , drop = FALSE]
+    }
 
     tibble::tibble(
       node_id = graph_node_id("tbl", label),

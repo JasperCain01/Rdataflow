@@ -4,7 +4,13 @@
 \alias{sql_dataflow}
 \title{Visualise the column-level data flow of a SQL script}
 \usage{
-sql_dataflow(sql, schema = NULL, dialect = "tsql", show_col_edges = TRUE)
+sql_dataflow(
+  sql,
+  schema = NULL,
+  dialect = "tsql",
+  show_col_edges = TRUE,
+  show_unused_cols = TRUE
+)
 }
 \arguments{
 \item{sql}{A SQL script as a length-1 character string. Multiple statements
@@ -23,6 +29,12 @@ query.}
 \item{show_col_edges}{If \code{TRUE} (default), edges connect individual source
 columns to the output columns they feed (port-to-port). If \code{FALSE}, only
 structural table→stage edges are drawn, labelled with join type.}
+
+\item{show_unused_cols}{If \code{TRUE} (default), table nodes display every
+catalog column, with unused ones rendered in white. If \code{FALSE}, only
+columns that are projected or used as join keys are shown, producing a
+more compact diagram. Useful when the schema has many columns and the
+diagram becomes too tall to view comfortably.}
 }
 \value{
 A \code{DiagrammeR} / htmlwidget object. Displays automatically in the
@@ -54,6 +66,15 @@ sql_dataflow(
    FROM dbo.orders
    GROUP BY customer_id",
   schema = s
+)
+
+# Compact view: hide catalog columns not referenced in the query
+sql_dataflow(
+  "SELECT customer_id, SUM(amount) AS total
+   FROM dbo.orders
+   GROUP BY customer_id",
+  schema = s,
+  show_unused_cols = FALSE
 )
 
 # With a live database connection (SQL Server via odbc)
