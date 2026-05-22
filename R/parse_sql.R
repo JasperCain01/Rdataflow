@@ -94,6 +94,12 @@ find_py_path <- function() {
 #' projections, sources, joins, group-bys, and filters. This is the raw
 #' structure consumed by [build_ir()].
 #'
+#' Procedural T-SQL constructs (`DECLARE`, `SET`, `CREATE TABLE`, `DROP TABLE`,
+#' `INSERT … VALUES`, `CREATE INDEX`) are handled natively in R before any SQL
+#' reaches Python. Each SELECT-bearing statement is sent to the Python/sqlglot
+#' parser inside a [callr::r_session] subprocess so that a C-level crash in
+#' sqlglot cannot kill the R session.
+#'
 #' @param sql A SQL script as a length-1 character vector.
 #' @param schema An optional `rdataflow_schema` object (see
 #'   [schema_from_list()] / [schema_from_con()]). When supplied, `*` is
@@ -101,29 +107,202 @@ find_py_path <- function() {
 #' @param dialect sqlglot dialect name; defaults to `"tsql"`.
 #'
 #' @return A nested list with a `statements` element. Each statement carries
-#'   `index`, `kind`, `output_table`, and a list of `stages`.
+#'   `index`, `kind`, `output_table`, and a list of `stages`. A `skipped`
+#'   element lists any statements that could not be parsed (non-fatal).
 #' @export
 parse_sql <- function(sql, schema = NULL, dialect = "tsql") {
   stopifnot(is.character(sql), length(sql) == 1)
 
-  mod <- load_py_module()
+  # --- Step 1: split + classify -------------------------------------------
+  stmts    <- classify_statements(split_statements(sql))
+  skipped  <- character()
 
-  # Pre-filter the schema to only the tables referenced in the SQL before
-  # building the Python-side mapping. Passing a full enterprise catalog
-  # (hundreds of tables, tens of thousands of columns) through reticulate can
-  # exhaust memory. A token scan of the SQL is intentionally over-inclusive
-  # (false positives just add extra tables, which is harmless) — the goal is
-  # to exclude the vast majority of tables that are definitely not referenced.
-  if (!is.null(schema)) {
-    schema <- filter_schema_to_sql(sql, schema)
+  # Kinds that route to sqlglot (SELECT-bearing statements).
+  select_kinds <- c("select", "select_into", "insert_select")
+
+  # --- Step 2: thread registries forward through the script ---------------
+  var_registry  <- tibble::tibble(
+    name = character(), type = character(),
+    value_expr = character(), is_literal = logical()
+  )
+  temp_registry <- new_temp_registry()
+
+  statements_out <- vector("list", nrow(stmts))
+
+  for (i in seq_len(nrow(stmts))) {
+    row  <- stmts[i, ]
+    kind <- row$kind
+    text <- row$text
+    seq  <- row$seq
+
+    if (kind == "declare") {
+      # --- native: accumulate variable registry ---
+      new_var <- extract_declare(text)
+      if (nrow(new_var) > 0L) {
+        var_registry <- dplyr::bind_rows(var_registry, new_var)
+      }
+      next
+
+    } else if (kind == "set_var") {
+      # --- native: update variable registry with new value ---
+      new_var <- extract_declare(text)
+      if (nrow(new_var) > 0L) {
+        # SET updates the value for an already-declared variable. If the name
+        # exists in the registry, update it; otherwise append.
+        existing_idx <- which(var_registry$name == new_var$name[1])
+        if (length(existing_idx) > 0L) {
+          var_registry$value_expr[existing_idx[1]] <- new_var$value_expr[1]
+          var_registry$is_literal[existing_idx[1]] <- new_var$is_literal[1]
+        } else {
+          var_registry <- dplyr::bind_rows(var_registry, new_var)
+        }
+      }
+      next
+
+    } else if (kind == "create_table") {
+      # --- native: parse column list and register in temp schema ---
+      cols <- parse_create_table_columns(text)
+      tbl  <- extract_output_table(text, kind)
+      if (!is.null(tbl) && nchar(tbl) > 0L) {
+        temp_registry <- register_temp_table(temp_registry, tbl, cols,
+                                             origin_seq = seq)
+      }
+      next
+
+    } else if (kind %in% c("drop", "create_index", "insert_values", "unknown")) {
+      # --- skip: no lineage contribution ---
+      skipped <- c(skipped,
+                   sprintf("seq %d (%s): skipped non-SELECT statement", seq, kind))
+      next
+
+    } else if (kind %in% select_kinds) {
+      # --- SELECT path: substitute vars, merge temp schema, then parse ---
+
+      # Variable substitution: removes @vars and complex T-SQL expressions
+      # before the text reaches the Python tokeniser.
+      clean_text <- substitute_vars(text, var_registry)
+
+      # Determine output_table (for INSERT INTO … SELECT or SELECT … INTO).
+      output_tbl <- extract_output_table(clean_text, kind)
+
+      # Merge temp schema so sqlglot can qualify temp-table references.
+      merged_schema <- filter_schema_to_sql(clean_text, schema)
+      merged_schema <- merge_temp_schema(clean_text, merged_schema, temp_registry)
+
+      # Parse inside subprocess — crash-safe.
+      iso <- parse_one_select_isolated(clean_text, schema = merged_schema,
+                                       dialect = dialect,
+                                       skipped_log = skipped)
+      skipped <- iso$skipped_log
+      parsed  <- iso$result
+
+      if (is.null(parsed) || length(parsed$statements) == 0L) {
+        skipped <- c(skipped,
+                     sprintf("seq %d (%s): no lineage extracted", seq, kind))
+        next
+      }
+
+      # sqlglot may return multiple statements for one input (rare); take all.
+      for (st in parsed$statements) {
+        # Override kind and output_table with our R-level classification,
+        # which is more reliable for procedural scripts.
+        st$kind         <- kind
+        st$output_table <- output_tbl %||% st$output_table
+        statements_out[[length(Filter(Negate(is.null), statements_out)) + 1L]] <- st
+      }
+
+      # After a SELECT INTO / INSERT SELECT, register the output columns in
+      # the temp registry so downstream statements can resolve them.
+      if (!is.null(output_tbl) && nzchar(output_tbl)) {
+        temp_registry <- register_select_output(
+          temp_registry, parsed, output_tbl, origin_seq = seq
+        )
+      }
+
+    } else {
+      skipped <- c(skipped,
+                   sprintf("seq %d (unhandled kind '%s'): skipped", seq, kind))
+    }
   }
 
-  # Convert our schema object into the nested mapping sqlglot's qualifier
-  # expects; NULL means "no schema" (parse without qualification).
-  py_schema <- if (is.null(schema)) NULL else as_sqlglot_schema(schema)
+  # Re-index the statements list (some entries may be NULL from skips above).
+  out_stmts <- Filter(Negate(is.null), statements_out)
+  for (j in seq_along(out_stmts)) {
+    out_stmts[[j]]$index <- j
+  }
 
-  # reticulate auto-converts the returned Python dict into a nested R list.
-  mod$extract_lineage(sql, schema = py_schema, dialect = dialect)
+  list(statements = out_stmts, skipped = skipped)
+}
+
+# Null-coalescing operator: return lhs unless it is NULL, then return rhs.
+`%||%` <- function(lhs, rhs) if (is.null(lhs)) rhs else lhs
+
+# Extract the output table name from a statement, given its classified kind.
+# Returns NULL when the statement has no output table.
+extract_output_table <- function(text, kind) {
+  if (kind == "select_into") {
+    # SELECT ... INTO #name ...
+    m <- regexpr("(?i)\\bINTO\\s+([A-Za-z_#][A-Za-z0-9_#.]*)", text, perl = TRUE)
+    if (m > 0L) {
+      raw <- regmatches(text, m)
+      return(trimws(sub("(?i)^INTO\\s+", "", raw, perl = TRUE)))
+    }
+    # CREATE TABLE #name AS SELECT ...
+    m2 <- regexpr(
+      "(?i)^CREATE\\s+TABLE\\s+([A-Za-z_#][A-Za-z0-9_#.]*)", text, perl = TRUE
+    )
+    if (m2 > 0L) {
+      raw <- regmatches(text, m2)
+      return(trimws(sub("(?i)^CREATE\\s+TABLE\\s+", "", raw, perl = TRUE)))
+    }
+    return(NULL)
+  }
+  if (kind == "insert_select") {
+    m <- regexpr(
+      "(?i)^INSERT\\s+INTO\\s+([A-Za-z_#\\[][A-Za-z0-9_#.\\]]*)",
+      text, perl = TRUE
+    )
+    if (m > 0L) {
+      raw <- regmatches(text, m)
+      tbl <- trimws(sub("(?i)^INSERT\\s+INTO\\s+", "", raw, perl = TRUE))
+      return(gsub("^\\[|\\]$", "", tbl))
+    }
+    return(NULL)
+  }
+  if (kind == "create_table") {
+    m <- regexpr(
+      "(?i)^CREATE\\s+TABLE\\s+([A-Za-z_#\\[][A-Za-z0-9_#.\\]]*)",
+      text, perl = TRUE
+    )
+    if (m > 0L) {
+      raw <- regmatches(text, m)
+      tbl <- trimws(sub("(?i)^CREATE\\s+TABLE\\s+", "", raw, perl = TRUE))
+      return(gsub("^\\[|\\]$", "", tbl))
+    }
+    return(NULL)
+  }
+  NULL
+}
+
+# After parsing a SELECT INTO / INSERT SELECT, register the output columns
+# from the first output stage into the temp registry.
+register_select_output <- function(temp_registry, parsed, output_tbl, origin_seq) {
+  for (st in parsed$statements) {
+    for (stg in st$stages) {
+      if (!identical(stg$role, "output")) next
+      cols <- tibble::tibble(
+        column  = vapply(stg$projections, function(p) p$output, character(1)),
+        type    = NA_character_,
+        ordinal = seq_along(stg$projections)
+      )
+      if (nrow(cols) > 0L) {
+        temp_registry <- register_temp_table(temp_registry, output_tbl,
+                                             cols, origin_seq)
+      }
+      return(temp_registry)
+    }
+  }
+  temp_registry
 }
 
 # Return a copy of schema restricted to tables whose leaf name appears as a

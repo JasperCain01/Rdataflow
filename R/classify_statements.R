@@ -79,7 +79,11 @@ classify_one <- function(text) {
 
   if (grepl("^WITH\\b", kw)) {
     has_sel <- has_depth0_select(text)
-    return(if (has_sel) "select" else "unknown")
+    if (!has_sel) return("unknown")
+    # WITH ... SELECT ... INTO is a SELECT INTO; plain WITH ... SELECT is select.
+    clean <- strip_comments(text)
+    if (grepl("\\bINTO\\b", clean, ignore.case = TRUE)) return("select_into")
+    return("select")
   }
 
   if (grepl("^INSERT INTO|^INSERT ", kw)) {
