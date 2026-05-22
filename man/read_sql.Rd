@@ -2,81 +2,28 @@
 % Please edit documentation in R/sql_dataflow.R
 \name{read_sql}
 \alias{read_sql}
-\title{Visualise the column-level data flow of a SQL script}
+\title{Read a SQL script from a file}
 \usage{
 read_sql(path)
 }
 \arguments{
 \item{path}{Path to a \code{.sql} file.}
-
-\item{sql}{A SQL script as a length-1 character string. Multiple statements
-are supported; each is processed independently.}
-
-\item{schema}{An optional \code{rdataflow_schema} (see \code{\link[=schema_from_list]{schema_from_list()}} or
-\code{\link[=schema_from_con]{schema_from_con()}}). When supplied, \verb{SELECT *} is expanded and
-unqualified column references are resolved against the catalog. Table
-nodes will show all catalog columns, not just the ones referenced in the
-query.}
-
-\item{dialect}{\code{sqlglot} dialect name passed to the parser. Defaults to
-\code{"tsql"} (SQL Server / T-SQL). Other valid values include \code{"spark"},
-\code{"bigquery"}, \code{"postgres"}, \code{"mysql"}, etc.}
-
-\item{show_col_edges}{If \code{TRUE} (default), edges connect individual source
-columns to the output columns they feed (port-to-port). If \code{FALSE}, only
-structural table→stage edges are drawn, labelled with join type.}
 }
 \value{
-A \code{DiagrammeR} / htmlwidget object. Displays automatically in the
-RStudio Viewer, R Markdown, and Shiny. Call \code{\link[=graph_to_dot]{graph_to_dot()}} on the
-intermediate \code{\link[=build_graph]{build_graph()}} result to obtain the raw DOT string.
-
 A length-1 character string containing the full SQL script.
 }
 \description{
-Parses a SQL script using \code{sqlglot} (via \code{reticulate}), builds a
-column-level lineage model, and renders it as a Graphviz flow diagram.
-Physical source tables are shown on the left with all catalog columns
-highlighted by role (projected / join key); CTE and output stages are shown
-on the right with columns colour-coded by transformation type.
+A convenience wrapper around \code{\link[=readLines]{readLines()}} that suppresses the
+\code{"incomplete final line"} warning produced when a SQL file does not end
+with a newline (common when the last character is a \verb{;}), and collapses
+the result into a single string ready for \code{\link[=sql_dataflow]{sql_dataflow()}}.
 }
 \examples{
 \dontrun{
-# Minimal usage (no schema — only referenced columns are shown)
-sql_dataflow(
-  "SELECT o.customer_id, SUM(o.amount) AS total
-   FROM dbo.orders o
-   GROUP BY o.customer_id"
-)
-
-# With an offline schema so all catalog columns appear
-s <- schema_from_list(list(
-  "dbo.orders" = c(order_id = "INT", customer_id = "INT", amount = "DECIMAL")
-))
-sql_dataflow(
-  "SELECT customer_id, SUM(amount) AS total
-   FROM dbo.orders
-   GROUP BY customer_id",
-  schema = s
-)
-
-# With a live database connection (SQL Server via odbc)
-con <- DBI::dbConnect(odbc::odbc(), dsn = "my_dsn")
-s   <- schema_from_con(con)
-sql_dataflow(readLines("my_script.sql", warn = FALSE), schema = s)
-DBI::dbDisconnect(con)
+sql <- read_sql("my_script.sql")
+sql_dataflow(sql)
 }
-Read a SQL script from a file
-
-A convenience wrapper around [readLines()] that suppresses the
-`"incomplete final line"` warning produced when a SQL file does not end
-with a newline (common when the last character is a `;`), and collapses
-the result into a single string ready for [sql_dataflow()].
-
 }
 \seealso{
-\code{\link[=schema_from_list]{schema_from_list()}}, \code{\link[=schema_from_con]{schema_from_con()}}, \code{\link[=build_graph]{build_graph()}},
-\code{\link[=plot_sqlflow]{plot_sqlflow()}}, \code{\link[=graph_to_dot]{graph_to_dot()}}
-
 \code{\link[=sql_dataflow]{sql_dataflow()}}
 }

@@ -12,6 +12,27 @@
 # customise each stage independently.
 # ---------------------------------------------------------------------------
 
+#' Read a SQL script from a file
+#'
+#' A convenience wrapper around [readLines()] that suppresses the
+#' `"incomplete final line"` warning produced when a SQL file does not end
+#' with a newline (common when the last character is a `;`), and collapses
+#' the result into a single string ready for [sql_dataflow()].
+#'
+#' @param path Path to a `.sql` file.
+#' @return A length-1 character string containing the full SQL script.
+#' @seealso [sql_dataflow()]
+#' @export
+#'
+#' @examples
+#' \dontrun{
+#' sql <- read_sql("my_script.sql")
+#' sql_dataflow(sql)
+#' }
+read_sql <- function(path) {
+  paste(readLines(path, warn = FALSE), collapse = "\n")
+}
+
 #' Visualise the column-level data flow of a SQL script
 #'
 #' Parses a SQL script using `sqlglot` (via `reticulate`), builds a
@@ -41,6 +62,8 @@
 #' @seealso [schema_from_list()], [schema_from_con()], [build_graph()],
 #'   [plot_sqlflow()], [graph_to_dot()]
 #'
+#' @export
+#'
 #' @examples
 #' \dontrun{
 #' # Minimal usage (no schema — only referenced columns are shown)
@@ -64,25 +87,9 @@
 #' # With a live database connection (SQL Server via odbc)
 #' con <- DBI::dbConnect(odbc::odbc(), dsn = "my_dsn")
 #' s   <- schema_from_con(con)
-#' sql_dataflow(readLines("my_script.sql", warn = FALSE), schema = s)
+#' sql_dataflow(read_sql("my_script.sql"), schema = s)
 #' DBI::dbDisconnect(con)
 #' }
-#' Read a SQL script from a file
-#'
-#' A convenience wrapper around [readLines()] that suppresses the
-#' `"incomplete final line"` warning produced when a SQL file does not end
-#' with a newline (common when the last character is a `;`), and collapses
-#' the result into a single string ready for [sql_dataflow()].
-#'
-#' @param path Path to a `.sql` file.
-#' @return A length-1 character string containing the full SQL script.
-#' @seealso [sql_dataflow()]
-#' @export
-read_sql <- function(path) {
-  paste(readLines(path, warn = FALSE), collapse = "\n")
-}
-
-#' @export
 sql_dataflow <- function(sql, schema = NULL, dialect = "tsql",
                          show_col_edges = TRUE) {
   stopifnot(is.character(sql), length(sql) >= 1L)
