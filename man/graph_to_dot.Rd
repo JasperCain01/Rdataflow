@@ -4,7 +4,12 @@
 \alias{graph_to_dot}
 \title{Export the Graphviz DOT source for a dataflow graph}
 \usage{
-graph_to_dot(graph, show_col_edges = TRUE, show_legend = TRUE)
+graph_to_dot(
+  graph,
+  show_col_edges = TRUE,
+  show_legend = TRUE,
+  rank_lanes = TRUE
+)
 }
 \arguments{
 \item{graph}{An \code{rdataflow_graph} produced by \code{\link[=build_graph]{build_graph()}}.}
@@ -16,6 +21,12 @@ table→stage edges only, labelled with join types.}
 \item{show_legend}{If \code{TRUE} (default), append a colour-coding legend
 cluster to the diagram explaining node header colours, column role
 colours, transformation type colours, and edge styles.}
+
+\item{rank_lanes}{If \code{TRUE} (default), insert \code{rank=same} constraints so
+that nodes at the same dependency depth are aligned in the same column.
+This turns parallel branches into aligned vertical lanes, making complex
+multi-stage scripts easier to follow. Pass \code{FALSE} to let Graphviz place
+nodes freely.}
 }
 \value{
 A length-1 character string of valid DOT code.
