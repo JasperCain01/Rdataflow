@@ -59,6 +59,9 @@ read_sql <- function(path) {
 #'   columns that are projected or used as join keys are shown, producing a
 #'   more compact diagram. Useful when the schema has many columns and the
 #'   diagram becomes too tall to view comfortably.
+#' @param show_legend If `TRUE` (default), a colour-coding legend is appended
+#'   to the diagram, explaining node header colours, column role colours,
+#'   transformation type colours, and edge styles.
 #'
 #' @return A `DiagrammeR` / htmlwidget object. Displays automatically in the
 #'   RStudio Viewer, R Markdown, and Shiny. Call [graph_to_dot()] on the
@@ -105,7 +108,8 @@ read_sql <- function(path) {
 #' DBI::dbDisconnect(con)
 #' }
 sql_dataflow <- function(sql, schema = NULL, dialect = "tsql",
-                         show_col_edges = TRUE, show_unused_cols = TRUE) {
+                         show_col_edges = TRUE, show_unused_cols = TRUE,
+                         show_legend = TRUE) {
   stopifnot(is.character(sql), length(sql) >= 1L)
 
   # Collapse multi-element vectors (e.g. from readLines()) into one string.
@@ -117,5 +121,5 @@ sql_dataflow <- function(sql, schema = NULL, dialect = "tsql",
   classified <- classify_transform(ir)
   graph      <- build_graph(classified, schema = schema,
                             show_unused_cols = show_unused_cols)
-  plot_sqlflow(graph, show_col_edges = show_col_edges)
+  plot_sqlflow(graph, show_col_edges = show_col_edges, show_legend = show_legend)
 }

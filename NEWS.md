@@ -34,6 +34,11 @@
   stage nodes that produce `#temp` tables are connected to the stages that
   consume them, rendering the full temp-table chain in the flow diagram.
 
+* `graph_to_dot()` / `plot_sqlflow()` / `sql_dataflow()` gain a `show_legend`
+  argument (default `TRUE`). When enabled, a colour-coding legend cluster is
+  appended to the diagram, explaining node header colours, column role colours,
+  transformation type colours, and edge styles.
+
 * `sql_dataflow()` / `build_graph()` gain a `show_unused_cols` argument. When
   `FALSE`, table nodes display only projected and join-key columns, producing a
   more compact diagram for wide tables.
