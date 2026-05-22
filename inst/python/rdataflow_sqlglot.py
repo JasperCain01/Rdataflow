@@ -9,6 +9,7 @@ version differences (e.g. arg keys ``from_``/``with_`` in 30.x).
 
 import sqlglot
 from sqlglot import exp
+from sqlglot.errors import ErrorLevel
 from sqlglot.optimizer.qualify import qualify
 
 
@@ -230,7 +231,11 @@ def extract_lineage(sql, schema=None, dialect="tsql"):
     dict with key ``"statements"`` -> list of statement descriptors.
     """
     statements = []
-    parsed = sqlglot.parse(sql, dialect=dialect)
+    # Use WARN rather than the default RAISE so that unsupported T-SQL
+    # constructs (e.g. certain operator combinations) produce a best-effort
+    # AST instead of a hard exception. Affected expressions will be absent
+    # from the lineage but the rest of the query is still processed.
+    parsed = sqlglot.parse(sql, dialect=dialect, error_level=ErrorLevel.WARN)
     for i, stmt in enumerate(parsed, start=1):
         if stmt is None:
             continue
