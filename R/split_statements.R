@@ -29,6 +29,12 @@
 split_statements <- function(sql) {
   stopifnot(is.character(sql), length(sql) == 1)
 
+  # Normalize encoding to UTF-8 before any byte-level work. Files saved by SSMS
+  # as UTF-8 BOM or other Windows encodings cause gsub() to abort with
+  # "input string 1 is invalid in this locale". iconv() with sub = "" silently
+  # drops unmappable bytes rather than aborting.
+  sql <- iconv(sql, to = "UTF-8", sub = "")
+
   # Expand any Windows CRLF to LF so line-comment detection is uniform.
   sql <- gsub("\r\n", "\n", sql, fixed = TRUE)
 

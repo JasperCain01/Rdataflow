@@ -10,8 +10,10 @@
 # Strip line comments (--…\n) and block comments (/* … */) from a SQL string.
 # Returns only the comment-free text so keyword matching is unambiguous.
 strip_comments <- function(text) {
-  # Remove block comments first (greedy-minimal, DOTALL via perl).
-  text <- gsub("/\\*.*?\\*/", " ", text, perl = TRUE)
+  # Remove block comments first. (?s) enables DOTALL so '.' matches newlines —
+  # without it, multi-line block comments are only partially stripped, leaving
+  # stray '*/' fragments that corrupt the leading-keyword extraction.
+  text <- gsub("(?s)/\\*.*?\\*/", " ", text, perl = TRUE)
   # Remove line comments.
   text <- gsub("--[^\n]*", " ", text)
   text
