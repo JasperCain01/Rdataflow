@@ -17,11 +17,19 @@ expanded and unqualified columns are resolved to their tables.}
 }
 \value{
 A nested list with a \code{statements} element. Each statement carries
-\code{index}, \code{kind}, \code{output_table}, and a list of \code{stages}.
+\code{index}, \code{kind}, \code{output_table}, and a list of \code{stages}. A \code{skipped}
+element lists any statements that could not be parsed (non-fatal).
 }
 \description{
 Parses (and, when a schema is supplied, qualifies) a SQL script using
 \code{sqlglot}, returning a nested list describing each statement's stages,
 projections, sources, joins, group-bys, and filters. This is the raw
 structure consumed by \code{\link[=build_ir]{build_ir()}}.
+}
+\details{
+Procedural T-SQL constructs (\code{DECLARE}, \code{SET}, \verb{CREATE TABLE}, \verb{DROP TABLE},
+\verb{INSERT … VALUES}, \verb{CREATE INDEX}) are handled natively in R before any SQL
+reaches Python. Each SELECT-bearing statement is sent to the Python/sqlglot
+parser inside a \link[callr:r_session]{callr::r_session} subprocess so that a C-level crash in
+sqlglot cannot kill the R session.
 }

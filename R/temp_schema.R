@@ -145,7 +145,7 @@ new_temp_registry <- function() {
 #' @param registry A tibble as returned by [new_temp_registry()].
 #' @param table_name Name of the temp table (e.g. `"#prison_terms"`).
 #' @param columns_tbl A tibble with at least `column` and `type` columns and
-#'   optionally `ordinal`, as returned by [parse_create_table_columns()].
+#'   optionally `ordinal`, as returned by `parse_create_table_columns()`.
 #' @param origin_seq Integer: the `seq` index of the originating statement.
 #'
 #' @return The updated registry tibble.
