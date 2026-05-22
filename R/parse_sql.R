@@ -108,12 +108,43 @@ parse_sql <- function(sql, schema = NULL, dialect = "tsql") {
 
   mod <- load_py_module()
 
+  # Pre-filter the schema to only the tables referenced in the SQL before
+  # building the Python-side mapping. Passing a full enterprise catalog
+  # (hundreds of tables, tens of thousands of columns) through reticulate can
+  # exhaust memory. A token scan of the SQL is intentionally over-inclusive
+  # (false positives just add extra tables, which is harmless) — the goal is
+  # to exclude the vast majority of tables that are definitely not referenced.
+  if (!is.null(schema)) {
+    schema <- filter_schema_to_sql(sql, schema)
+  }
+
   # Convert our schema object into the nested mapping sqlglot's qualifier
   # expects; NULL means "no schema" (parse without qualification).
   py_schema <- if (is.null(schema)) NULL else as_sqlglot_schema(schema)
 
   # reticulate auto-converts the returned Python dict into a nested R list.
   mod$extract_lineage(sql, schema = py_schema, dialect = dialect)
+}
+
+# Return a copy of schema restricted to tables whose leaf name appears as a
+# word token in the SQL string. This is a deliberate over-approximation: any
+# word that matches a table name is kept, so there will be false positives
+# (e.g. a column alias that happens to share a table name), but no false
+# negatives. The result is used immediately by as_sqlglot_schema() so the
+# reticulate payload stays small even against catalogs with thousands of tables.
+filter_schema_to_sql <- function(sql, schema) {
+  # Extract every word-like token from the SQL (identifiers, keywords, literals).
+  # Bracket-quoted names like [my_table] are handled by also matching the inner
+  # word; the brackets themselves are non-word characters and split naturally.
+  tokens <- tolower(unique(stringr::str_extract_all(sql, "[A-Za-z_#][A-Za-z0-9_#]*")[[1]]))
+
+  keep <- tolower(schema$columns$table) %in% tokens
+  if (!any(keep)) {
+    # No tables matched — fall back to the full schema rather than passing
+    # nothing (which would disable qualification entirely).
+    return(schema)
+  }
+  new_schema(schema$columns[keep, , drop = FALSE])
 }
 
 # Convert an rdataflow_schema into the flat mapping sqlglot wants:
