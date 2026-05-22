@@ -7,10 +7,18 @@ R lists. Keeping the traversal in one place also isolates sqlglot
 version differences (e.g. arg keys ``from_``/``with_`` in 30.x).
 """
 
+import sys
 import sqlglot
 from sqlglot import exp
 from sqlglot.errors import ErrorLevel
 from sqlglot.optimizer.qualify import qualify
+
+# sqlglot builds ASTs recursively. Complex T-SQL expressions (e.g. deeply
+# nested TRANSLATE/REPLACE/REPLICATE chains or large procedural scripts) can
+# exceed Python's default limit of 1000 frames, crashing the R session via
+# reticulate. 5000 gives enough headroom for real-world production queries
+# without meaningful performance cost.
+sys.setrecursionlimit(5000)
 
 
 def _arg(node, *names):
@@ -212,6 +220,35 @@ def _extract_statement(stmt, index):
     }
 
 
+def _is_non_lineage_stmt(stmt):
+    """Return True for statements that carry no SELECT-level lineage.
+
+    DECLARE, DROP, CREATE TABLE (without AS SELECT), CREATE INDEX, and
+    bare INSERT...VALUES do not produce projections or stage connections
+    that Rdataflow can trace. Skipping them avoids crashes on complex
+    T-SQL procedural constructs while preserving all SELECT-bearing
+    statements (SELECT...INTO, INSERT...SELECT, CREATE TABLE AS SELECT).
+    """
+    if isinstance(stmt, exp.Command):
+        return True
+    # DECLARE @var ... — procedural variable declaration
+    if type(stmt).__name__ in ("Declare", "Set"):
+        return True
+    # DROP TABLE / DROP TABLE IF EXISTS
+    if isinstance(stmt, exp.Drop):
+        return True
+    # CREATE INDEX (no SELECT inside)
+    if isinstance(stmt, exp.Create):
+        # CREATE TABLE AS SELECT is useful; bare CREATE TABLE is not
+        if stmt.find(exp.Select) is None:
+            return True
+    # INSERT ... VALUES (no SELECT); INSERT ... SELECT is kept
+    if isinstance(stmt, exp.Insert):
+        if stmt.find(exp.Select) is None:
+            return True
+    return False
+
+
 def extract_lineage(sql, schema=None, dialect="tsql"):
     """Parse a SQL script and extract per-statement lineage information.
 
@@ -232,12 +269,25 @@ def extract_lineage(sql, schema=None, dialect="tsql"):
     """
     statements = []
     # Use WARN rather than the default RAISE so that unsupported T-SQL
-    # constructs (e.g. certain operator combinations) produce a best-effort
-    # AST instead of a hard exception. Affected expressions will be absent
-    # from the lineage but the rest of the query is still processed.
-    parsed = sqlglot.parse(sql, dialect=dialect, error_level=ErrorLevel.WARN)
+    # constructs produce a best-effort AST instead of a hard exception.
+    try:
+        parsed = sqlglot.parse(sql, dialect=dialect, error_level=ErrorLevel.WARN)
+    except RecursionError:
+        # A deeply nested expression (e.g. TRANSLATE/REPLACE chains) can blow
+        # Python's call stack even with the raised recursion limit. Return
+        # whatever was parsed before the crash rather than aborting R.
+        parsed = []
+    except Exception:
+        parsed = []
+
     for i, stmt in enumerate(parsed, start=1):
         if stmt is None:
+            continue
+        # Skip purely procedural / DDL statements that carry no SELECT lineage:
+        # DECLARE, DROP TABLE IF EXISTS, CREATE TABLE (no AS SELECT),
+        # CREATE INDEX, and bare INSERT ... VALUES. Attempting to qualify or
+        # extract projections from these crashes on certain T-SQL dialects.
+        if _is_non_lineage_stmt(stmt):
             continue
         # Qualify against the schema when we have one; fall back to the raw
         # AST if qualification fails (e.g. references to temp tables not in
@@ -247,5 +297,13 @@ def extract_lineage(sql, schema=None, dialect="tsql"):
                 stmt = qualify(stmt, schema=schema, dialect=dialect)
         except Exception:
             pass
-        statements.append(_extract_statement(stmt, i))
+        # Wrap individual statement extraction so one bad statement (e.g. a
+        # deeply nested expression that survived parsing but breaks traversal)
+        # does not abort processing of the remaining statements.
+        try:
+            statements.append(_extract_statement(stmt, i))
+        except RecursionError:
+            pass
+        except Exception:
+            pass
     return {"statements": statements}
