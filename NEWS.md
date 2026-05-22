@@ -39,6 +39,12 @@
   appended to the diagram, explaining node header colours, column role colours,
   transformation type colours, and edge styles.
 
+* `graph_to_dot()` / `plot_sqlflow()` / `sql_dataflow()` gain a `rank_lanes`
+  argument (default `TRUE`). When enabled, `rank=same` constraints align all
+  nodes at the same dependency depth into the same column, turning parallel
+  branches into aligned vertical lanes and making complex multi-stage scripts
+  much easier to follow.
+
 * `sql_dataflow()` / `build_graph()` gain a `show_unused_cols` argument. When
   `FALSE`, table nodes display only projected and join-key columns, producing a
   more compact diagram for wide tables.

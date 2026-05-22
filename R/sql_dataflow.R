@@ -62,6 +62,10 @@ read_sql <- function(path) {
 #' @param show_legend If `TRUE` (default), a colour-coding legend is appended
 #'   to the diagram, explaining node header colours, column role colours,
 #'   transformation type colours, and edge styles.
+#' @param rank_lanes If `TRUE` (default), nodes at the same dependency depth
+#'   are aligned in the same column using `rank=same` constraints. This turns
+#'   parallel branches into aligned vertical lanes. Pass `FALSE` to let
+#'   Graphviz place nodes freely.
 #'
 #' @return A `DiagrammeR` / htmlwidget object. Displays automatically in the
 #'   RStudio Viewer, R Markdown, and Shiny. Call [graph_to_dot()] on the
@@ -109,7 +113,7 @@ read_sql <- function(path) {
 #' }
 sql_dataflow <- function(sql, schema = NULL, dialect = "tsql",
                          show_col_edges = TRUE, show_unused_cols = TRUE,
-                         show_legend = TRUE) {
+                         show_legend = TRUE, rank_lanes = TRUE) {
   stopifnot(is.character(sql), length(sql) >= 1L)
 
   # Collapse multi-element vectors (e.g. from readLines()) into one string.
@@ -121,5 +125,10 @@ sql_dataflow <- function(sql, schema = NULL, dialect = "tsql",
   classified <- classify_transform(ir)
   graph      <- build_graph(classified, schema = schema,
                             show_unused_cols = show_unused_cols)
-  plot_sqlflow(graph, show_col_edges = show_col_edges, show_legend = show_legend)
+  plot_sqlflow(
+    graph,
+    show_col_edges = show_col_edges,
+    show_legend    = show_legend,
+    rank_lanes     = rank_lanes
+  )
 }

@@ -10,7 +10,8 @@ sql_dataflow(
   dialect = "tsql",
   show_col_edges = TRUE,
   show_unused_cols = TRUE,
-  show_legend = TRUE
+  show_legend = TRUE,
+  rank_lanes = TRUE
 )
 }
 \arguments{
@@ -40,6 +41,11 @@ diagram becomes too tall to view comfortably.}
 \item{show_legend}{If \code{TRUE} (default), a colour-coding legend is appended
 to the diagram, explaining node header colours, column role colours,
 transformation type colours, and edge styles.}
+
+\item{rank_lanes}{If \code{TRUE} (default), nodes at the same dependency depth
+are aligned in the same column using \code{rank=same} constraints. This turns
+parallel branches into aligned vertical lanes. Pass \code{FALSE} to let
+Graphviz place nodes freely.}
 }
 \value{
 A \code{DiagrammeR} / htmlwidget object. Displays automatically in the

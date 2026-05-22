@@ -120,3 +120,51 @@ test_that("show_legend parameter passes through sql_dataflow to plot", {
   expect_false(grepl("Legend", dot_no, fixed = TRUE))
   expect_true(grepl("Legend", dot_yes, fixed = TRUE))
 })
+
+# ---------------------------------------------------------------------------
+# Rank lane tests
+# ---------------------------------------------------------------------------
+
+test_that("compute_node_ranks assigns depth 0 to table nodes", {
+  skip_if_not(sqlglot_available(), "sqlglot not available")
+  g     <- test_plot_ir()
+  ranks <- compute_node_ranks(g)
+  tbl_ranks <- ranks[g$table_nodes$node_id]
+  expect_true(all(tbl_ranks == 0L))
+})
+
+test_that("compute_node_ranks assigns depth >= 1 to all stage nodes", {
+  skip_if_not(sqlglot_available(), "sqlglot not available")
+  g     <- test_plot_ir()
+  ranks <- compute_node_ranks(g)
+  stg_ranks <- ranks[g$stage_nodes$node_id]
+  expect_true(all(!is.na(stg_ranks)))
+  expect_true(all(stg_ranks >= 1L))
+})
+
+test_that("dot_rank_constraints produces one block per depth level", {
+  skip_if_not(sqlglot_available(), "sqlglot not available")
+  g      <- test_plot_ir()
+  ranks  <- compute_node_ranks(g)
+  blocks <- dot_rank_constraints(ranks)
+  # Every block must start with the rank=same pattern
+  expect_true(all(grepl("rank=same", blocks, fixed = TRUE)))
+  # Physical-table nodes (depth 0) must NOT appear in any rank block
+  for (nid in g$table_nodes$node_id) {
+    expect_false(any(grepl(nid, blocks, fixed = TRUE)))
+  }
+})
+
+test_that("graph_to_dot includes rank=same by default", {
+  skip_if_not(sqlglot_available(), "sqlglot not available")
+  g   <- test_plot_ir()
+  dot <- graph_to_dot(g)
+  expect_match(dot, "rank=same")
+})
+
+test_that("graph_to_dot omits rank=same when rank_lanes = FALSE", {
+  skip_if_not(sqlglot_available(), "sqlglot not available")
+  g   <- test_plot_ir()
+  dot <- graph_to_dot(g, rank_lanes = FALSE)
+  expect_false(grepl("rank=same", dot, fixed = TRUE))
+})

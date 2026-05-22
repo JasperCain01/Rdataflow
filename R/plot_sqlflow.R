@@ -55,11 +55,17 @@
 #' @param show_legend If `TRUE` (default), append a colour-coding legend
 #'   cluster to the diagram explaining node header colours, column role
 #'   colours, transformation type colours, and edge styles.
+#' @param rank_lanes If `TRUE` (default), insert `rank=same` constraints so
+#'   that nodes at the same dependency depth are aligned in the same column.
+#'   This turns parallel branches into aligned vertical lanes, making complex
+#'   multi-stage scripts easier to follow. Pass `FALSE` to let Graphviz place
+#'   nodes freely.
 #'
 #' @return A `DiagrammeR` htmlwidget for display in RStudio, R Markdown, or
 #'   Shiny.
 #' @export
-plot_sqlflow <- function(graph, show_col_edges = TRUE, show_legend = TRUE) {
+plot_sqlflow <- function(graph, show_col_edges = TRUE, show_legend = TRUE,
+                         rank_lanes = TRUE) {
   if (!requireNamespace("DiagrammeR", quietly = TRUE)) {
     rlang::abort(paste(
       "Package 'DiagrammeR' is required.",
@@ -68,7 +74,12 @@ plot_sqlflow <- function(graph, show_col_edges = TRUE, show_legend = TRUE) {
   }
   stopifnot(inherits(graph, "rdataflow_graph"))
   DiagrammeR::grViz(
-    graph_to_dot(graph, show_col_edges = show_col_edges, show_legend = show_legend)
+    graph_to_dot(
+      graph,
+      show_col_edges = show_col_edges,
+      show_legend    = show_legend,
+      rank_lanes     = rank_lanes
+    )
   )
 }
 
@@ -81,7 +92,8 @@ plot_sqlflow <- function(graph, show_col_edges = TRUE, show_legend = TRUE) {
 #' @inheritParams plot_sqlflow
 #' @return A length-1 character string of valid DOT code.
 #' @export
-graph_to_dot <- function(graph, show_col_edges = TRUE, show_legend = TRUE) {
+graph_to_dot <- function(graph, show_col_edges = TRUE, show_legend = TRUE,
+                         rank_lanes = TRUE) {
   stopifnot(inherits(graph, "rdataflow_graph"))
 
   # Generate one DOT node statement per table node and stage node.
@@ -105,11 +117,22 @@ graph_to_dot <- function(graph, show_col_edges = TRUE, show_legend = TRUE) {
     )
   }
 
+  # Optional rank=same constraints to align parallel branches in columns.
+  rank_stmts <- if (isTRUE(rank_lanes)) {
+    dot_rank_constraints(compute_node_ranks(graph))
+  } else {
+    character(0)
+  }
+
   # Optional legend cluster appended before the closing brace.
   legend_stmts <- if (isTRUE(show_legend)) dot_legend_subgraph() else character(0)
 
   paste(
-    c(dot_preamble(), tbl_stmts, "", stg_stmts, "", edge_stmts, legend_stmts, "}"),
+    c(
+      dot_preamble(), tbl_stmts, "", stg_stmts, "",
+      rank_stmts, "",
+      edge_stmts, legend_stmts, "}"
+    ),
     collapse = "\n"
   )
 }
@@ -326,6 +349,89 @@ build_temp_edge_stmts <- function(temp_edges) {
       row$from_node_id, row$to_node_id
     )
   })
+}
+
+# ---------------------------------------------------------------------------
+# Rank-lane computation
+# ---------------------------------------------------------------------------
+
+# Assign a topological depth to every node in the graph.
+#
+# Physical table nodes start at depth 0. Each stage node's depth is
+# max(predecessor depths) + 1, where predecessors are found via source_edges,
+# cte_edges, and temp_edges. The result is a named integer vector
+# (node_id → depth). Nodes with unresolvable predecessors (shouldn't occur
+# in a valid DAG) are left as NA and silently excluded from rank blocks.
+compute_node_ranks <- function(graph) {
+  # Collect all dependency edges from all three edge types.
+  edge_sets <- list(
+    graph$source_edges,
+    graph$cte_edges,
+    graph$temp_edges
+  )
+  edge_sets <- Filter(\(e) !is.null(e) && nrow(e) > 0L, edge_sets)
+
+  all_edges <- if (length(edge_sets) > 0L) {
+    purrr::list_rbind(
+      purrr::map(edge_sets, \(e) e[, c("from_node_id", "to_node_id")])
+    )
+  } else {
+    tibble::tibble(from_node_id = character(), to_node_id = character())
+  }
+
+  tbl_ids <- graph$table_nodes$node_id
+  stg_ids <- graph$stage_nodes$node_id
+
+  # Seed: physical tables at depth 0, stages unknown.
+  ranks <- as.list(
+    stats::setNames(
+      c(rep(0L, length(tbl_ids)), rep(NA_integer_, length(stg_ids))),
+      c(tbl_ids, stg_ids)
+    )
+  )
+
+  # Iterative BFS: resolve each stage node once all its predecessors are known.
+  # Runs at most length(stg_ids) passes; terminates early when nothing changes.
+  for (pass in seq_along(stg_ids)) {
+    changed <- FALSE
+    for (nid in stg_ids) {
+      if (!is.na(ranks[[nid]])) next  # already resolved
+
+      preds <- all_edges$from_node_id[all_edges$to_node_id == nid]
+
+      if (length(preds) == 0L) {
+        # Stage with no identified predecessor (e.g. standalone SELECT) → depth 1.
+        ranks[[nid]] <- 1L
+        changed <- TRUE
+      } else {
+        pred_ranks <- vapply(preds, \(p) ranks[[p]] %||% NA_integer_, integer(1))
+        if (anyNA(pred_ranks)) next  # predecessor not yet resolved; retry later
+        ranks[[nid]] <- max(pred_ranks) + 1L
+        changed <- TRUE
+      }
+    }
+    if (!changed) break
+  }
+
+  unlist(ranks)
+}
+
+# Generate DOT rank=same constraint blocks from a named depth vector.
+# Each unique depth gets one block listing all node IDs at that depth.
+# Depth-0 nodes (physical tables) are excluded — Graphviz already places
+# source nodes on the left naturally and adding rank=same there can confuse
+# the layout when there are many tables at different vertical positions.
+dot_rank_constraints <- function(node_ranks) {
+  # Drop NAs and physical table nodes (depth 0) — constrain stages only.
+  stage_ranks <- node_ranks[!is.na(node_ranks) & node_ranks > 0L]
+  if (length(stage_ranks) == 0L) return(character(0))
+
+  # One {rank=same; ...} block per depth level.
+  rank_groups <- split(names(stage_ranks), stage_ranks)
+  purrr::map_chr(
+    rank_groups,
+    \(node_ids) sprintf("  {rank=same; %s}", paste(node_ids, collapse = "; "))
+  )
 }
 
 # ---------------------------------------------------------------------------
