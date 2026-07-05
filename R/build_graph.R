@@ -19,7 +19,9 @@
 #
 # Column sub-tibbles
 #   table_nodes$columns : col_name, col_type, used, is_key
-#   stage_nodes$columns : col_name, transform_type
+#   stage_nodes$columns : col_name, expr, transform_type
+# table_nodes also carry n_hidden (count of columns suppressed by max_cols);
+# stage_nodes also carry statement_index and the stage's WHERE predicate.
 # ---------------------------------------------------------------------------
 
 #' Build the flow graph from a lineage IR
@@ -34,15 +36,22 @@
 #'   catalog column, with unused ones rendered in white. If `FALSE`, only
 #'   columns that are projected or used as join keys are shown, producing a
 #'   more compact diagram.
+#' @param max_cols Maximum number of column rows to display per table node
+#'   (default `Inf` = no limit). Columns that are projected or used as join
+#'   keys are always kept; unused catalog columns fill the remaining space
+#'   and any overflow is summarised as an "… n more columns" row. Useful
+#'   against wide warehouse tables where a full catalog listing would make
+#'   the node unreadably tall.
 #'
 #' @return An object of class `rdataflow_graph` (a named list of tibbles; see
 #'   the file header for the full schema).
 #' @export
-build_graph <- function(ir, schema = NULL, show_unused_cols = TRUE) {
+build_graph <- function(ir, schema = NULL, show_unused_cols = TRUE,
+                        max_cols = Inf) {
   stopifnot(inherits(ir, "rdataflow_ir"))
   if (!is.null(schema)) stopifnot(inherits(schema, "rdataflow_schema"))
 
-  tbl_nodes  <- make_table_nodes(ir, schema, show_unused_cols)
+  tbl_nodes  <- make_table_nodes(ir, schema, show_unused_cols, max_cols)
   stg_nodes  <- make_stage_nodes(ir)
   src_edges  <- make_source_edges(ir, tbl_nodes, stg_nodes)
   cte_edges  <- make_cte_edges(ir, stg_nodes)
@@ -70,7 +79,8 @@ build_graph <- function(ir, schema = NULL, show_unused_cols = TRUE) {
 # output_table names (temp tables produced by earlier SELECT INTO / INSERT
 # SELECT statements) are excluded because they become stage nodes, not table
 # nodes. This is the cross-statement analogue of the CTE exclusion.
-make_table_nodes <- function(ir, schema, show_unused_cols = TRUE) {
+make_table_nodes <- function(ir, schema, show_unused_cols = TRUE,
+                             max_cols = Inf) {
   # CTE names are scoped to their statement: a source ref only counts as a
   # CTE reference when the same statement defines a CTE of that name. This
   # stops a CTE in statement 1 from hiding a physical table of the same name
@@ -102,7 +112,7 @@ make_table_nodes <- function(ir, schema, show_unused_cols = TRUE) {
   if (nrow(phys) == 0) {
     return(tibble::tibble(
       node_id = character(), label = character(), table = character(),
-      columns = list()
+      n_hidden = integer(), columns = list()
     ))
   }
 
@@ -149,11 +159,27 @@ make_table_nodes <- function(ir, schema, show_unused_cols = TRUE) {
       columns_tbl <- columns_tbl[columns_tbl$used | columns_tbl$is_key, , drop = FALSE]
     }
 
+    # Cap the number of displayed rows. Projected / key columns are always
+    # kept; unused catalog columns fill the remaining budget in catalog
+    # order. The overflow count renders as an "… n more columns" row.
+    n_hidden <- 0L
+    if (is.finite(max_cols) && nrow(columns_tbl) > max_cols) {
+      keep <- columns_tbl$used | columns_tbl$is_key
+      room <- max(0L, as.integer(max_cols) - sum(keep))
+      fillers <- which(!keep)
+      if (room > 0L && length(fillers) > 0L) {
+        keep[fillers[seq_len(min(room, length(fillers)))]] <- TRUE
+      }
+      n_hidden <- sum(!keep)
+      columns_tbl <- columns_tbl[keep, , drop = FALSE]
+    }
+
     tibble::tibble(
-      node_id = graph_node_id("tbl", label),
-      label   = label,
-      table   = tbl,
-      columns = list(columns_tbl)
+      node_id  = graph_node_id("tbl", label),
+      label    = label,
+      table    = tbl,
+      n_hidden = n_hidden,
+      columns  = list(columns_tbl)
     )
   }) |> purrr::list_rbind()
 }
@@ -175,6 +201,7 @@ make_stage_nodes <- function(ir) {
       output_table    = character(),
       display_name    = character(),
       transform_label = character(),
+      where           = character(),
       columns         = list()
     ))
   }
@@ -194,9 +221,12 @@ make_stage_nodes <- function(ir) {
     }
 
     # Output columns for this stage, with transformation category when known.
+    # expr carries the full SELECT-list expression so the renderer can expose
+    # exactly what each output column computes (tooltips).
     proj <- ir$projections[ir$projections$stage_id == sid, ]
     columns_tbl <- tibble::tibble(
       col_name       = proj$output,
+      expr           = proj$expr,
       transform_type = if ("transform_type" %in% names(proj)) {
         proj$transform_type
       } else {
@@ -217,6 +247,7 @@ make_stage_nodes <- function(ir) {
       output_table    = stg$output_table,
       display_name    = display_name,
       transform_label = transform_label,
+      where           = if ("where" %in% names(stg)) stg$where else NA_character_,
       columns         = list(columns_tbl)
     )
   }) |> purrr::list_rbind()

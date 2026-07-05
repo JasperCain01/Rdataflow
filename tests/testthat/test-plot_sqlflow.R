@@ -168,3 +168,89 @@ test_that("graph_to_dot omits rank=same when rank_lanes = FALSE", {
   dot <- graph_to_dot(g, rank_lanes = FALSE)
   expect_false(grepl("rank=same", dot, fixed = TRUE))
 })
+
+# --- Batch C regression tests -----------------------------------------------
+
+test_that("stage columns carry expression tooltips in the DOT output", {
+  skip_if_not(sqlglot_available(), "sqlglot not available")
+  ir <- classify_transform(build_ir(parse_sql(
+    "SELECT SUM(amount) AS total FROM dbo.orders GROUP BY customer_id"
+  )))
+  g <- build_graph(ir)
+  dot <- graph_to_dot(g)
+  expect_match(dot, 'TOOLTIP="SUM', fixed = TRUE)
+})
+
+test_that("WHERE predicates render as stage footers", {
+  skip_if_not(sqlglot_available(), "sqlglot not available")
+  ir <- classify_transform(build_ir(parse_sql(
+    "SELECT a FROM dbo.t WHERE b > 5"
+  )))
+  g <- build_graph(ir)
+  dot <- graph_to_dot(g)
+  expect_match(dot, "WHERE", fixed = TRUE)
+})
+
+test_that("join keys appear on structural edges", {
+  skip_if_not(sqlglot_available(), "sqlglot not available")
+  ir <- classify_transform(build_ir(parse_sql(paste(
+    "SELECT c.customer_id, o.amount FROM dbo.customers c",
+    "LEFT JOIN dbo.orders o ON o.customer_id = c.customer_id"
+  ))))
+  g <- build_graph(ir)
+  dot <- graph_to_dot(g, show_col_edges = FALSE)
+  expect_match(dot, "LEFT JOIN\\n", fixed = TRUE)   # label contains keys
+  expect_match(dot, "customer_id = ", fixed = TRUE)
+})
+
+test_that("column-edge mode still draws faint structural join edges", {
+  skip_if_not(sqlglot_available(), "sqlglot not available")
+  ir <- classify_transform(build_ir(parse_sql(paste(
+    "SELECT c.customer_id FROM dbo.customers c",
+    "LEFT JOIN dbo.orders o ON o.customer_id = c.customer_id"
+  ))))
+  g <- build_graph(ir)
+  dot <- graph_to_dot(g, show_col_edges = TRUE)
+  expect_match(dot, "LEFT JOIN", fixed = TRUE)
+})
+
+test_that("legend is dynamic — absent categories are not listed", {
+  skip_if_not(sqlglot_available(), "sqlglot not available")
+  # A single passthrough select: no window/date/case/cast anywhere.
+  ir <- classify_transform(build_ir(parse_sql("SELECT a FROM dbo.t")))
+  g <- build_graph(ir)
+  dot <- graph_to_dot(g, show_legend = TRUE)
+  expect_false(grepl(">window<", dot))
+  expect_false(grepl(">cast<", dot))
+  expect_true(grepl("Legend", dot))
+})
+
+test_that("max_cols truncates wide tables with an overflow row", {
+  skip_if_not(sqlglot_available(), "sqlglot not available")
+  s <- schema_from_list(list(
+    "dbo.wide" = stats::setNames(rep("INT", 20), paste0("c", 1:20))
+  ))
+  ir <- classify_transform(build_ir(parse_sql(
+    "SELECT c1 FROM dbo.wide", schema = s
+  )))
+  g <- build_graph(ir, schema = s, max_cols = 5)
+  wide <- g$table_nodes[g$table_nodes$table == "wide", ]
+  expect_equal(nrow(wide$columns[[1]]), 5L)
+  expect_equal(wide$n_hidden, 15L)
+  expect_match(graph_to_dot(g), "more columns")
+  # projected column is always kept
+  expect_true("c1" %in% wide$columns[[1]]$col_name)
+})
+
+test_that("rankdir=TB is honoured and save_sqlflow writes DOT files", {
+  skip_if_not(sqlglot_available(), "sqlglot not available")
+  ir <- classify_transform(build_ir(parse_sql("SELECT a FROM dbo.t")))
+  g <- build_graph(ir)
+  expect_match(graph_to_dot(g, rankdir = "TB"), "rankdir=TB", fixed = TRUE)
+
+  path <- tempfile(fileext = ".dot")
+  save_sqlflow(g, path)
+  expect_true(file.exists(path))
+  expect_match(paste(readLines(path), collapse = "\n"), "digraph sqlflow")
+  unlink(path)
+})

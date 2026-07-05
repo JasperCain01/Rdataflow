@@ -21,9 +21,11 @@ string_fns <- c("CONCAT", "CONCAT_WS", "SUBSTRING", "LEFT", "RIGHT", "UPPER",
                 "LOWER", "TRIM", "LTRIM", "RTRIM", "REPLACE", "LEN", "LENGTH",
                 "CHARINDEX", "PATINDEX", "STUFF", "FORMAT", "REPLICATE")
 # Aggregate function names, used to label which aggregates a stage uses (the
-# is_aggregate flag already tells us *that* it aggregates).
+# is_aggregate flag already tells us *that* it aggregates). Note sqlglot
+# reports COUNT(DISTINCT x) simply as COUNT (distinctness is an AST arg,
+# not part of the function name).
 agg_fns <- c("SUM", "COUNT", "COUNT_IF", "AVG", "MIN", "MAX", "STDEV", "STDEVP",
-             "VAR", "VARP", "STRING_AGG", "COUNTDISTINCT")
+             "VAR", "VARP", "STRING_AGG")
 
 #' Classify the transformations in a lineage IR
 #'
@@ -53,22 +55,27 @@ classify_transform <- function(ir) {
 
 # Categorise a single projection. Priority order matters: a window aggregate
 # is reported as a window function; an aggregate over a date-diff is reported
-# as an aggregate; and so on from most to least specific.
+# as an aggregate; and so on from most to least specific. Structural flags
+# (window, aggregate, CASE) outrank function-name matches so that e.g.
+# CASE WHEN ... THEN DATEDIFF(...) END reads as "case" (the branching is the
+# defining shape), not "date".
 classify_projection <- function(is_aggregate, has_window, has_case, functions,
                                  expr) {
   funcs <- toupper(as.character(unlist(functions)))
 
   if (isTRUE(has_window)) return("window")
   if (isTRUE(is_aggregate)) return("aggregate")
-  if (any(funcs %in% date_fns)) return("date")
   if (isTRUE(has_case)) return("case")
+  if (any(funcs %in% date_fns)) return("date")
   if (any(funcs %in% cast_fns)) return("cast")
   if (any(funcs %in% string_fns)) return("string")
 
   # No recognised function: distinguish a plain arithmetic expression from a
-  # straight passthrough of a column. We strip the trailing "AS alias" before
-  # looking for arithmetic operators so the alias cannot trigger a match.
+  # straight passthrough of a column. Strip the trailing "AS alias" and any
+  # quoted literals first, so an alias or a hyphenated literal such as
+  # '2024-01-01' cannot trigger an operator match.
   body <- stringr::str_remove(expr, "(?i)\\s+AS\\s+\\[?[^\\]]+\\]?\\s*$")
+  body <- stringr::str_remove_all(body, "N?'([^']|'')*'")
   if (stringr::str_detect(body, "[-+*/%]")) return("arithmetic")
   if (length(funcs) > 0) return("expression")
   "passthrough"
@@ -90,6 +97,17 @@ summarize_stage_transforms <- function(ir) {
     types <- proj$transform_type
     funcs <- toupper(as.character(unlist(proj$functions)))
 
+    # Aggregate names only from projections classified as aggregates —
+    # otherwise SUM(x) OVER (...) (a window function) would mislabel the
+    # stage as "GROUP BY ...; SUM".
+    agg_proj_funcs <- toupper(as.character(unlist(
+      proj$functions[types == "aggregate"]
+    )))
+    used_aggs  <- unique(agg_proj_funcs[agg_proj_funcs %in% agg_fns])
+    # Date function names from any projection: a date calc inside a CASE is
+    # still worth naming.
+    used_dates <- unique(funcs[funcs %in% date_fns])
+
     has_aggregation <- any(types == "aggregate") || nrow(grp) > 0
     has_window <- any(types == "window")
     has_case <- any(types == "case")
@@ -103,14 +121,14 @@ summarize_stage_transforms <- function(ir) {
       has_date = has_date,
       # Notable function names actually used (aggregates + dates), de-duped.
       functions = list(unique(funcs[funcs %in% c(agg_fns, date_fns)])),
-      label = build_stage_label(types, funcs, grp$expr)
+      label = build_stage_label(types, used_aggs, used_dates, grp$expr)
     )
   }) |> purrr::list_rbind()
 }
 
 # Compose the flow-line box text for a stage from its projection categories,
-# the functions it uses, and its GROUP BY columns.
-build_stage_label <- function(types, funcs, group_exprs) {
+# the aggregate / date function names it uses, and its GROUP BY columns.
+build_stage_label <- function(types, used_aggs, used_dates, group_exprs) {
   parts <- character()
 
   # Lead with grouping, since it frames how the aggregates are computed.
@@ -120,16 +138,21 @@ build_stage_label <- function(types, funcs, group_exprs) {
   }
 
   # Name the specific aggregate functions used (SUM, COUNT, ...).
-  used_aggs <- unique(funcs[funcs %in% agg_fns])
   if (length(used_aggs) > 0) {
     parts <- c(parts, paste(used_aggs, collapse = ", "))
   }
 
-  # Call out other notable transformation kinds present in the stage.
+  # Call out other notable transformation kinds present in the stage,
+  # naming date functions (DATEDIFF, EOMONTH, ...) when known.
   if (any(types == "window")) parts <- c(parts, "window fn")
-  if (any(types == "date")) parts <- c(parts, "date calc")
+  if (length(used_dates) > 0) {
+    parts <- c(parts, paste(used_dates, collapse = ", "))
+  } else if (any(types == "date")) {
+    parts <- c(parts, "date calc")
+  }
   if (any(types == "case")) parts <- c(parts, "CASE")
   if (any(types == "cast")) parts <- c(parts, "cast")
+  if (any(types == "string")) parts <- c(parts, "string fn")
 
   paste(parts, collapse = "; ")
 }
