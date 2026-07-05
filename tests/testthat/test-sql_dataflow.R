@@ -81,3 +81,34 @@ test_that("read_sql strips a UTF-8 BOM", {
   expect_equal(read_sql(path), "SELECT 1")
   unlink(path)
 })
+
+# --- Batch B: skip-log surfacing ---------------------------------------------
+
+test_that("notify_skipped warns about real losses and messages benign skips", {
+  # Real loss -> warning listing the entry
+  expect_warning(
+    notify_skipped("seq 2: unrecognised statement skipped (may contain lineage): MERGE..."),
+    "missing lineage"
+  )
+  # Benign skip -> message only, no warning
+  expect_message(
+    expect_no_warning(
+      notify_skipped("seq 1 (drop): skipped non-SELECT statement")
+    ),
+    "no lineage contribution"
+  )
+  # Nothing -> silence
+  expect_silent(notify_skipped(character(0)))
+})
+
+test_that("parse_sql logs unrecognised statements distinctly", {
+  skip_if_not(sqlglot_available(), "sqlglot not available")
+  res <- parse_sql("MERGE INTO t USING s ON t.id = s.id WHEN MATCHED THEN UPDATE SET t.v = s.v;")
+  expect_true(any(grepl("unrecognised statement", res$skipped)))
+})
+
+test_that("parse_sql logs unresolved variables", {
+  skip_if_not(sqlglot_available(), "sqlglot not available")
+  res <- parse_sql("SELECT a FROM dbo.t WHERE b = @never_declared")
+  expect_true(any(grepl("@never_declared", res$skipped)))
+})

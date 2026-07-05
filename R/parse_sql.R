@@ -169,10 +169,21 @@ parse_sql <- function(sql, schema = NULL, dialect = "tsql") {
       }
       next
 
-    } else if (kind %in% c("drop", "create_index", "insert_values", "unknown")) {
-      # --- skip: no lineage contribution ---
+    } else if (kind %in% c("drop", "create_index", "insert_values")) {
+      # --- skip: no lineage contribution by design (benign) ---
       skipped <- c(skipped,
                    sprintf("seq %d (%s): skipped non-SELECT statement", seq, kind))
+      next
+
+    } else if (kind == "unknown") {
+      # --- skip: possibly a REAL lineage loss (unsupported construct) ---
+      # Distinct wording from the benign skip so sql_dataflow() can warn the
+      # user that the diagram may be missing this statement's lineage.
+      preview <- substr(gsub("\\s+", " ", text), 1L, 60L)
+      skipped <- c(skipped, sprintf(
+        "seq %d: unrecognised statement skipped (may contain lineage): %s...",
+        seq, preview
+      ))
       next
 
     } else if (kind %in% select_kinds) {
@@ -181,6 +192,18 @@ parse_sql <- function(sql, schema = NULL, dialect = "tsql") {
       # Variable substitution: removes @vars and complex T-SQL expressions
       # before the text reaches the Python tokeniser.
       clean_text <- substitute_vars(text, var_registry)
+
+      # Any @vars still present had no usable DECLARE (unknown type and
+      # non-literal value). Log them — the statement may fail to parse.
+      leftover_vars <- unique(unlist(
+        stringr::str_extract_all(clean_text, "@[A-Za-z0-9_]+")
+      ))
+      if (length(leftover_vars) > 0L) {
+        skipped <- c(skipped, sprintf(
+          "seq %d (%s): unresolved variable(s) %s (no usable DECLARE seen)",
+          seq, kind, paste(leftover_vars, collapse = ", ")
+        ))
+      }
 
       # Determine output_table (for INSERT INTO … SELECT or SELECT … INTO).
       output_tbl <- extract_output_table(clean_text, kind)
@@ -195,6 +218,13 @@ parse_sql <- function(sql, schema = NULL, dialect = "tsql") {
                                        skipped_log = skipped)
       skipped <- iso$skipped_log
       parsed  <- iso$result
+
+      # Relay any Python-side skip reasons (parse/qualify/extract failures)
+      # with this statement's position attached.
+      py_skips <- as.character(unlist(parsed$skipped))
+      if (length(py_skips) > 0L) {
+        skipped <- c(skipped, sprintf("seq %d (%s): %s", seq, kind, py_skips))
+      }
 
       if (is.null(parsed) || length(parsed$statements) == 0L) {
         skipped <- c(skipped,

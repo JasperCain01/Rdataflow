@@ -265,9 +265,15 @@ def extract_lineage(sql, schema=None, dialect="tsql"):
 
     Returns
     -------
-    dict with key ``"statements"`` -> list of statement descriptors.
+    dict with keys:
+      ``"statements"`` -> list of statement descriptors.
+      ``"skipped"``    -> list of human-readable strings describing anything
+                          that could not be parsed, qualified, or extracted.
+                          Callers surface these to the user so lineage gaps
+                          are never silent.
     """
     statements = []
+    skipped = []
     # Use WARN rather than the default RAISE so that unsupported T-SQL
     # constructs produce a best-effort AST instead of a hard exception.
     try:
@@ -276,8 +282,12 @@ def extract_lineage(sql, schema=None, dialect="tsql"):
         # A deeply nested expression (e.g. TRANSLATE/REPLACE chains) can blow
         # Python's call stack even with the raised recursion limit. Return
         # whatever was parsed before the crash rather than aborting R.
+        skipped.append("sqlglot parse hit the recursion limit; "
+                       "statement dropped")
         parsed = []
-    except Exception:
+    except Exception as e:
+        skipped.append("sqlglot parse failed (%s: %s)"
+                       % (type(e).__name__, e))
         parsed = []
 
     for i, stmt in enumerate(parsed, start=1):
@@ -288,6 +298,8 @@ def extract_lineage(sql, schema=None, dialect="tsql"):
         # CREATE INDEX, and bare INSERT ... VALUES. Attempting to qualify or
         # extract projections from these crashes on certain T-SQL dialects.
         if _is_non_lineage_stmt(stmt):
+            skipped.append("no SELECT lineage in %s statement"
+                           % type(stmt).__name__)
             continue
         # Qualify against the schema when we have one; fall back to the raw
         # AST if qualification fails (e.g. references to temp tables not in
@@ -295,15 +307,19 @@ def extract_lineage(sql, schema=None, dialect="tsql"):
         try:
             if schema:
                 stmt = qualify(stmt, schema=schema, dialect=dialect)
-        except Exception:
-            pass
+        except Exception as e:
+            skipped.append("schema qualification failed (%s); lineage may "
+                           "be partial and * is not expanded"
+                           % type(e).__name__)
         # Wrap individual statement extraction so one bad statement (e.g. a
         # deeply nested expression that survived parsing but breaks traversal)
         # does not abort processing of the remaining statements.
         try:
             statements.append(_extract_statement(stmt, i))
         except RecursionError:
-            pass
-        except Exception:
-            pass
-    return {"statements": statements}
+            skipped.append("lineage extraction hit the recursion limit; "
+                           "statement dropped")
+        except Exception as e:
+            skipped.append("lineage extraction failed (%s: %s)"
+                           % (type(e).__name__, e))
+    return {"statements": statements, "skipped": skipped}

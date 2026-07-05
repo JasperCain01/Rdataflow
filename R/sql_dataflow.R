@@ -150,6 +150,7 @@ sql_dataflow <- function(sql, schema = NULL, dialect = "tsql",
 
   # Full pipeline: parse → IR → classify → graph → render.
   parsed     <- parse_sql(sql, schema = schema, dialect = dialect)
+  notify_skipped(parsed$skipped)
   ir         <- build_ir(parsed)
   classified <- classify_transform(ir)
   graph      <- build_graph(classified, schema = schema,
@@ -160,4 +161,32 @@ sql_dataflow <- function(sql, schema = NULL, dialect = "tsql",
     show_legend    = show_legend,
     rank_lanes     = rank_lanes
   )
+}
+
+# Surface the parse-stage skip log to the user. A lineage diagram that
+# silently omits statements is actively misleading, so anything that could
+# mean missing lineage (unrecognised statements, parse/qualify failures,
+# unresolved variables) is raised as a warning listing each entry. Benign
+# skips — statements that carry no lineage by design (DROP, CREATE INDEX,
+# INSERT ... VALUES) — are summarised in a message instead.
+notify_skipped <- function(skipped) {
+  if (length(skipped) == 0L) return(invisible(NULL))
+
+  benign <- grepl("skipped non-SELECT statement", skipped, fixed = TRUE)
+
+  if (any(!benign)) {
+    rlang::warn(paste0(
+      "Some statements could not be fully processed; ",
+      "the diagram may be missing lineage:\n",
+      paste0("  - ", skipped[!benign], collapse = "\n")
+    ))
+  }
+  if (any(benign)) {
+    rlang::inform(sprintf(
+      paste0("%d statement(s) with no lineage contribution ",
+             "(DROP / CREATE INDEX / INSERT ... VALUES) skipped."),
+      sum(benign)
+    ))
+  }
+  invisible(NULL)
 }
