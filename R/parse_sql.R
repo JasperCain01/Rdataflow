@@ -237,49 +237,34 @@ parse_sql <- function(sql, schema = NULL, dialect = "tsql") {
 # Null-coalescing operator: return lhs unless it is NULL, then return rhs.
 `%||%` <- function(lhs, rhs) if (is.null(lhs)) rhs else lhs
 
+# Match a (possibly bracket-quoted, possibly schema-qualified) table
+# identifier immediately after `prefix_re` in `text`. Handles all of
+# `#temp`, `dbo.summary`, `[dbo].[summary]`, and mixed forms. Returns the
+# identifier with brackets stripped from each part, or NULL if not found.
+match_ident_after <- function(text, prefix_re) {
+  part <- "(?:\\[[^]]+\\]|[A-Za-z_#][A-Za-z0-9_#]*)"
+  re <- paste0("(?i)", prefix_re, "\\s+(", part, "(?:\\.", part, ")*)")
+  m <- regexec(re, text, perl = TRUE)
+  caps <- regmatches(text, m)[[1]]
+  if (length(caps) < 2L) return(NULL)
+  gsub("\\[([^]]*)\\]", "\\1", caps[2])
+}
+
 # Extract the output table name from a statement, given its classified kind.
 # Returns NULL when the statement has no output table.
 extract_output_table <- function(text, kind) {
   if (kind == "select_into") {
-    # SELECT ... INTO #name ...
-    m <- regexpr("(?i)\\bINTO\\s+([A-Za-z_#][A-Za-z0-9_#.]*)", text, perl = TRUE)
-    if (m > 0L) {
-      raw <- regmatches(text, m)
-      return(trimws(sub("(?i)^INTO\\s+", "", raw, perl = TRUE)))
-    }
+    # SELECT ... INTO #name / [dbo].[name] ...
+    tbl <- match_ident_after(text, "\\bINTO")
+    if (!is.null(tbl)) return(tbl)
     # CREATE TABLE #name AS SELECT ...
-    m2 <- regexpr(
-      "(?i)^CREATE\\s+TABLE\\s+([A-Za-z_#][A-Za-z0-9_#.]*)", text, perl = TRUE
-    )
-    if (m2 > 0L) {
-      raw <- regmatches(text, m2)
-      return(trimws(sub("(?i)^CREATE\\s+TABLE\\s+", "", raw, perl = TRUE)))
-    }
-    return(NULL)
+    return(match_ident_after(text, "^CREATE\\s+TABLE"))
   }
   if (kind == "insert_select") {
-    m <- regexpr(
-      "(?i)^INSERT\\s+INTO\\s+([A-Za-z_#\\[][A-Za-z0-9_#.\\]]*)",
-      text, perl = TRUE
-    )
-    if (m > 0L) {
-      raw <- regmatches(text, m)
-      tbl <- trimws(sub("(?i)^INSERT\\s+INTO\\s+", "", raw, perl = TRUE))
-      return(gsub("^\\[|\\]$", "", tbl))
-    }
-    return(NULL)
+    return(match_ident_after(text, "^INSERT\\s+INTO"))
   }
   if (kind == "create_table") {
-    m <- regexpr(
-      "(?i)^CREATE\\s+TABLE\\s+([A-Za-z_#\\[][A-Za-z0-9_#.\\]]*)",
-      text, perl = TRUE
-    )
-    if (m > 0L) {
-      raw <- regmatches(text, m)
-      tbl <- trimws(sub("(?i)^CREATE\\s+TABLE\\s+", "", raw, perl = TRUE))
-      return(gsub("^\\[|\\]$", "", tbl))
-    }
-    return(NULL)
+    return(match_ident_after(text, "^CREATE\\s+TABLE"))
   }
   NULL
 }

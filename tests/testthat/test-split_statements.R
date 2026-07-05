@@ -112,3 +112,42 @@ test_that("semicolon inside bare string (no N prefix) does NOT split", {
   res <- split_statements(sql)
   expect_equal(nrow(res), 1L)
 })
+
+# --- Batch A regression tests -----------------------------------------------
+
+test_that("GO is only a terminator when first token on its line", {
+  # 'go' as a column alias must not split the statement
+  out <- split_statements("SELECT 1 AS go FROM t")
+  expect_equal(nrow(out), 1L)
+  expect_equal(out$text, "SELECT 1 AS go FROM t")
+
+  # 'go' mid-line surrounded by spaces must not split either
+  out2 <- split_statements("SELECT a go FROM t")
+  expect_equal(nrow(out2), 1L)
+
+  # a real GO on its own line still splits
+  out3 <- split_statements("SELECT 1\nGO\nSELECT 2")
+  expect_equal(out3$text, c("SELECT 1", "SELECT 2"))
+  expect_equal(out3$terminator[1], "GO")
+
+  # indented GO still counts (only whitespace precedes it on the line)
+  out4 <- split_statements("SELECT 1\n   GO\nSELECT 2")
+  expect_equal(out4$text, c("SELECT 1", "SELECT 2"))
+})
+
+test_that("GO with a repeat count is consumed as a terminator", {
+  out <- split_statements("SELECT 1\nGO 5\nSELECT 2")
+  expect_equal(out$text, c("SELECT 1", "SELECT 2"))
+  expect_equal(out$terminator[1], "GO")
+})
+
+test_that("nested block comments are handled", {
+  out <- split_statements("/* outer /* inner */ still comment */ SELECT 1; SELECT 2")
+  expect_equal(nrow(out), 2L)
+  expect_match(out$text[1], "SELECT 1$")
+  expect_equal(out$text[2], "SELECT 2")
+
+  # a semicolon inside the nested part must not split
+  out2 <- split_statements("SELECT 1 /* a /* b; */ c; */ FROM t; SELECT 2")
+  expect_equal(nrow(out2), 2L)
+})

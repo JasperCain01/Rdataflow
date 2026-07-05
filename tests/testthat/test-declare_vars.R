@@ -113,3 +113,32 @@ test_that("is_literal detects CAST(literal AS type) as literal", {
   out <- substitute_vars(sql, vars)
   expect_equal(out, "WHERE dt = CAST('2024-01-01' AS DATE)")
 })
+
+# --- Batch A regression tests -----------------------------------------------
+
+test_that("multi-variable DECLARE extracts every variable", {
+  out <- extract_declare("DECLARE @a INT = 5, @b INT = 6")
+  expect_equal(nrow(out), 2L)
+  expect_equal(out$name, c("@a", "@b"))
+  expect_equal(out$value_expr, c("5", "6"))
+  expect_true(all(out$is_literal))
+})
+
+test_that("multi-variable DECLARE with mixed values and types", {
+  out <- extract_declare(
+    "DECLARE @start DATE = '2024-01-01', @n INT, @label VARCHAR(50) = 'a,b'"
+  )
+  expect_equal(nrow(out), 3L)
+  expect_equal(out$name, c("@start", "@n", "@label"))
+  expect_equal(out$type, c("DATE", "INT", "VARCHAR"))
+  # the comma inside the string literal must not split the item
+  expect_equal(out$value_expr[3], "'a,b'")
+  expect_true(is.na(out$value_expr[2]))
+})
+
+test_that("DECLARE with AS keyword and precision commas still parses", {
+  out <- extract_declare("DECLARE @x AS DECIMAL(10,2) = 1.5")
+  expect_equal(out$name, "@x")
+  expect_equal(out$type, "DECIMAL")
+  expect_equal(out$value_expr, "1.5")
+})

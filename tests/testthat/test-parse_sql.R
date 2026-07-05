@@ -35,3 +35,25 @@ test_that("parse_sql expands * against the schema", {
                     function(p) p$output, character(1))
   expect_setequal(outputs, c("order_id", "customer_id", "amount"))
 })
+
+# --- Batch A regression tests -----------------------------------------------
+
+test_that("extract_output_table handles bracket-quoted identifiers", {
+  expect_equal(
+    extract_output_table("SELECT a INTO [dbo].[summary] FROM t", "select_into"),
+    "dbo.summary"
+  )
+  expect_equal(
+    extract_output_table("SELECT a INTO #tmp FROM t", "select_into"),
+    "#tmp"
+  )
+  expect_equal(
+    extract_output_table("INSERT INTO [dbo].[target] (a) SELECT a FROM t",
+                         "insert_select"),
+    "dbo.target"
+  )
+  expect_equal(
+    extract_output_table("CREATE TABLE [dbo].[t2] (id INT)", "create_table"),
+    "dbo.t2"
+  )
+})

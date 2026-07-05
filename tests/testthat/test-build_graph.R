@@ -177,3 +177,90 @@ test_that("show_unused_cols = FALSE hides unreferenced table columns", {
   # orders.customer_id IS used (join key + projected) — should appear.
   expect_true("customer_id" %in% orders_node$columns[[1]]$col_name)
 })
+
+# --- Batch A regression tests -----------------------------------------------
+
+test_that("same-named CTEs in different statements resolve independently", {
+  skip_if_not(sqlglot_available(), "sqlglot not available")
+
+  s <- schema_from_list(list(
+    "dbo.orders"    = c(order_id = "INT", customer_id = "INT", amount = "DECIMAL"),
+    "dbo.customers" = c(customer_id = "INT", name = "VARCHAR")
+  ))
+  # Both statements define a CTE called "base" reading different tables.
+  sql <- paste(
+    "WITH base AS (SELECT order_id, amount FROM dbo.orders)",
+    "SELECT order_id, amount INTO #a FROM base;",
+    "WITH base AS (SELECT customer_id, name FROM dbo.customers)",
+    "SELECT customer_id, name INTO #b FROM base"
+  )
+  ir <- classify_transform(build_ir(parse_sql(sql, schema = s)))
+  g  <- build_graph(ir, schema = s)
+
+  # Four stages: two CTEs + two outputs, and each output consumes its OWN base.
+  expect_equal(nrow(g$stage_nodes), 4L)
+  expect_equal(nrow(g$cte_edges), 2L)
+
+  out_a <- g$stage_nodes[g$stage_nodes$role == "output" &
+                           !is.na(g$stage_nodes$output_table) &
+                           g$stage_nodes$output_table == "#a", ]
+  out_b <- g$stage_nodes[g$stage_nodes$role == "output" &
+                           !is.na(g$stage_nodes$output_table) &
+                           g$stage_nodes$output_table == "#b", ]
+  cte_1 <- g$stage_nodes[g$stage_nodes$role == "cte" &
+                           g$stage_nodes$statement_index == out_a$statement_index, ]
+  cte_2 <- g$stage_nodes[g$stage_nodes$role == "cte" &
+                           g$stage_nodes$statement_index == out_b$statement_index, ]
+
+  edge_a <- g$cte_edges[g$cte_edges$to_node_id == out_a$node_id, ]
+  edge_b <- g$cte_edges[g$cte_edges$to_node_id == out_b$node_id, ]
+  expect_equal(edge_a$from_node_id, cte_1$node_id)
+  expect_equal(edge_b$from_node_id, cte_2$node_id)
+})
+
+test_that("a CTE name in one statement does not hide a same-named physical table in another", {
+  skip_if_not(sqlglot_available(), "sqlglot not available")
+
+  s <- schema_from_list(list(
+    "dbo.orders" = c(order_id = "INT", amount = "DECIMAL"),
+    "dbo.recent" = c(id = "INT", val = "INT")
+  ))
+  # Statement 1 defines CTE "recent"; statement 2 reads the PHYSICAL dbo.recent.
+  sql <- paste(
+    "WITH recent AS (SELECT order_id FROM dbo.orders)",
+    "SELECT order_id INTO #x FROM recent;",
+    "SELECT id, val INTO #y FROM dbo.recent"
+  )
+  ir <- classify_transform(build_ir(parse_sql(sql, schema = s)))
+  g  <- build_graph(ir, schema = s)
+
+  # dbo.recent must appear as a physical table node.
+  expect_true("recent" %in% tolower(g$table_nodes$table))
+  # And statement 2's output must have a source edge from it, not a cte edge.
+  out_y <- g$stage_nodes[g$stage_nodes$role == "output" &
+                           !is.na(g$stage_nodes$output_table) &
+                           g$stage_nodes$output_table == "#y", ]
+  recent_tbl <- g$table_nodes[tolower(g$table_nodes$table) == "recent", ]
+  expect_true(any(g$source_edges$from_node_id == recent_tbl$node_id &
+                    g$source_edges$to_node_id == out_y$node_id))
+})
+
+test_that("schema-qualified produced tables link producer to consumer", {
+  skip_if_not(sqlglot_available(), "sqlglot not available")
+
+  s <- schema_from_list(list(
+    "dbo.source_patients" = c(id = "INT", name = "VARCHAR")
+  ))
+  # INSERT INTO a schema-qualified table, then read it by qualified name.
+  sql <- paste(
+    "INSERT INTO [dbo].[staging] SELECT id, name FROM dbo.source_patients;",
+    "SELECT s.id FROM dbo.staging s"
+  )
+  ir <- classify_transform(build_ir(parse_sql(sql, schema = s)))
+  g  <- build_graph(ir, schema = s)
+
+  # dbo.staging is produced by statement 1 — must be a stage link, not a
+  # disconnected physical table node.
+  expect_false("staging" %in% tolower(g$table_nodes$table))
+  expect_equal(nrow(g$temp_edges), 1L)
+})

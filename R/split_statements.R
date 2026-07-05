@@ -12,8 +12,11 @@
 #'
 #' Applies a character-level state machine that recognises `;` and lone `GO`
 #' batch terminators only when they appear outside string literals, block
-#' comments, line comments, and bracket-quoted identifiers. Original text
-#' (including comments) is preserved in each chunk.
+#' comments (including nested `/* /* */ */` comments), line comments, and
+#' bracket-quoted identifiers. `GO` is only treated as a terminator when it
+#' is the first token on its line (matching SQL Server's rule that `GO` must
+#' appear alone on a line); an optional repeat count (`GO 5`) is consumed
+#' with it. Original text (including comments) is preserved in each chunk.
 #'
 #' @param sql A length-1 character vector containing the full SQL script.
 #'
@@ -48,6 +51,7 @@ split_statements <- function(sql) {
   state    <- "normal"    # current parse state
   buf      <- character() # characters accumulating for the current statement
   seq_idx  <- 1L          # next statement index
+  comment_depth <- 0L     # nesting depth inside block comments (T-SQL nests)
 
   i <- 1L  # current character position (1-based)
 
@@ -78,6 +82,7 @@ split_statements <- function(sql) {
         buf <- c(buf, ch, ch2)
         i <- i + 2L
         state <- "block_comment"
+        comment_depth <- 1L
 
       # --- Enter N-prefix or bare string literal
       } else if ((ch == "N" || ch == "n") && ch2 == "'") {
@@ -108,24 +113,28 @@ split_statements <- function(sql) {
         i <- i + 1L
 
       # --- Potential GO batch terminator
-      # Lone GO: must be preceded by newline/start and followed by
-      # newline/end/whitespace (not part of a longer identifier like GOTO).
+      # SQL Server requires GO to be the first token on its line: only
+      # whitespace may precede it back to the previous newline (or start of
+      # input). After GO, only whitespace, an optional repeat count (GO 5),
+      # and then end-of-line / end-of-input / ';' may follow. Anything else
+      # (e.g. GOTO, "SELECT 1 AS go") is ordinary text.
       } else if ((ch == "G" || ch == "g") && (ch2 == "O" || ch2 == "o")) {
-        # Check that the character after GO is end-of-input, whitespace,
-        # newline, or semicolon — and that the character before G was start,
-        # newline, or whitespace.
-        ch3 <- if (i + 1L < n) chars[i + 2L] else ""
-        prev_ch <- if (i > 1L) chars[i - 1L] else "\n"
+        # Scan backwards: only spaces/tabs allowed between line start and G.
+        j <- i - 1L
+        while (j >= 1L && chars[j] %in% c(" ", "\t")) j <- j - 1L
+        prev_ok <- j < 1L || chars[j] %in% c("\n", "\r")
 
-        prev_ok <- prev_ch %in% c("\n", "\r", " ", "\t") || i == 1L
-        next_ok <- ch3 == "" || ch3 %in% c("\n", "\r", " ", "\t", ";")
+        # Scan forwards past optional whitespace and repeat count.
+        k <- i + 2L
+        while (k <= n && chars[k] %in% c(" ", "\t")) k <- k + 1L
+        while (k <= n && chars[k] >= "0" && chars[k] <= "9") k <- k + 1L
+        while (k <= n && chars[k] %in% c(" ", "\t")) k <- k + 1L
+        next_ok <- k > n || chars[k] %in% c("\n", "\r", ";")
 
         if (prev_ok && next_ok) {
-          # This is a lone GO: consume it (don't add to buf) and flush.
+          # A lone GO line: consume it (and any repeat count), then flush.
           flush_chunk("GO")
-          i <- i + 2L
-          # Also skip any trailing whitespace/newline on the GO line.
-          while (i <= n && chars[i] %in% c(" ", "\t")) i <- i + 1L
+          i <- k
         } else {
           buf <- c(buf, ch)
           i <- i + 1L
@@ -143,13 +152,20 @@ split_statements <- function(sql) {
       if (ch == "\n") state <- "normal"
 
     } else if (state == "block_comment") {
-      # Block comments end at */ (both chars consumed, transition to normal).
-      buf <- c(buf, ch)
-      i <- i + 1L
-      if (ch == "*" && ch2 == "/") {
-        buf <- c(buf, ch2)
+      # T-SQL block comments nest: /* outer /* inner */ still comment */.
+      # Track depth so we only return to normal at the matching close.
+      if (ch == "/" && ch2 == "*") {
+        buf <- c(buf, ch, ch2)
+        i <- i + 2L
+        comment_depth <- comment_depth + 1L
+      } else if (ch == "*" && ch2 == "/") {
+        buf <- c(buf, ch, ch2)
+        i <- i + 2L
+        comment_depth <- comment_depth - 1L
+        if (comment_depth == 0L) state <- "normal"
+      } else {
+        buf <- c(buf, ch)
         i <- i + 1L
-        state <- "normal"
       }
 
     } else if (state == "string") {

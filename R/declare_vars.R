@@ -65,11 +65,80 @@ is_literal <- function(expr) {
   FALSE
 }
 
+# Split the body of a DECLARE statement on top-level commas: commas inside
+# parentheses (VARCHAR(10,2)) or single-quoted strings ('a,b') do not split.
+split_declare_items <- function(body) {
+  chars <- strsplit(body, "", fixed = TRUE)[[1]]
+  n <- length(chars)
+  depth <- 0L
+  in_string <- FALSE
+  pieces <- character()
+  start <- 1L
+  i <- 1L
+
+  while (i <= n) {
+    ch <- chars[i]
+    ch2 <- if (i < n) chars[i + 1L] else ""
+    if (in_string) {
+      if (ch == "'" && ch2 == "'") i <- i + 1L      # '' escape
+      else if (ch == "'") in_string <- FALSE
+    } else if (ch == "'") {
+      in_string <- TRUE
+    } else if (ch == "(") {
+      depth <- depth + 1L
+    } else if (ch == ")") {
+      depth <- depth - 1L
+    } else if (ch == "," && depth == 0L) {
+      pieces <- c(pieces, paste(chars[start:(i - 1L)], collapse = ""))
+      start <- i + 1L
+    }
+    i <- i + 1L
+  }
+  if (start <= n) {
+    pieces <- c(pieces, paste(chars[start:n], collapse = ""))
+  }
+  trimws(pieces)
+}
+
+# Parse one "@name TYPE [= expr]" item from a DECLARE body into a one-row
+# tibble, or a zero-row tibble when the item does not match.
+parse_declare_item <- function(item) {
+  m <- regexec(
+    paste0(
+      "^(@[A-Za-z0-9_]+)\\s+",                # @name
+      "(?:AS\\s+)?",                           # optional AS keyword
+      "([A-Za-z]+(?:\\s*\\([^)]*\\))?)",      # type (with optional precision)
+      "(?:\\s*=\\s*(.+))?$"                    # optional = value_expr
+    ),
+    item, ignore.case = TRUE, perl = TRUE
+  )
+  caps <- regmatches(item, m)[[1]]
+  if (length(caps) == 0L) {
+    return(tibble::tibble(
+      name = character(), type = character(),
+      value_expr = character(), is_literal = logical()
+    ))
+  }
+
+  ve <- if (length(caps) >= 4L && nzchar(trimws(caps[4]))) {
+    trimws(caps[4])
+  } else {
+    NA_character_
+  }
+  tibble::tibble(
+    name       = caps[2],
+    type       = toupper(sub("\\s*\\(.*", "", caps[3])),  # strip (precision)
+    value_expr = ve,
+    is_literal = is_literal(ve)
+  )
+}
+
 #' Extract variable declarations from a single SQL statement
 #'
-#' Parses a `DECLARE @var TYPE [= value_expr]` or `SET @var = value_expr`
-#' statement and returns a one-row tibble describing the variable. Returns a
-#' zero-row tibble for statements that are not DECLARE/SET.
+#' Parses a `DECLARE @var TYPE [= value_expr]` (one or more comma-separated
+#' variables) or `SET @var = value_expr` statement and returns one row per
+#' declared variable. Returns a zero-row tibble for statements that are not
+#' DECLARE/SET.
 #'
 #' @param text A length-1 character vector containing one SQL statement.
 #'
@@ -87,45 +156,14 @@ extract_declare <- function(text) {
 
   t <- trimws(text)
 
-  # --- DECLARE @var TYPE [= expr] ---
-  # Pattern: DECLARE @name TYPE_TOKEN [= rest]
-  # We allow optional (precision) after the type, e.g. VARCHAR(50).
-  m <- regexpr(
-    paste0(
-      "(?i)^DECLARE\\s+(@[A-Za-z0-9_]+)\\s+",
-      "([A-Za-z]+(?:\\([^)]*\\))?)\\s*",     # type (with optional parens)
-      "(?:=\\s*(.+))?$"                       # optional = value_expr
-    ),
-    t, perl = TRUE
-  )
-  if (m > 0L) {
-    caps <- regmatches(t, m)
-    # Re-extract capture groups individually for robustness.
-    nm <- sub(
-      paste0("(?i)^DECLARE\\s+(@[A-Za-z0-9_]+).*"), "\\1", t, perl = TRUE
-    )
-    ty <- sub(
-      paste0("(?i)^DECLARE\\s+@[A-Za-z0-9_]+\\s+",
-             "([A-Za-z]+(?:\\([^)]*\\))?).*"),
-      "\\1", t, perl = TRUE
-    )
-    # Value expr: everything after the first =, if present.
-    ve_raw <- sub(
-      paste0("(?i)^DECLARE\\s+@[A-Za-z0-9_]+\\s+",
-             "[A-Za-z]+(?:\\([^)]*\\))?\\s*(?:=\\s*(.+))?$"),
-      "\\1", t, perl = TRUE
-    )
-    ve <- if (identical(ve_raw, t) || !nzchar(trimws(ve_raw))) {
-      NA_character_
-    } else {
-      trimws(ve_raw)
-    }
-    return(tibble::tibble(
-      name       = nm,
-      type       = toupper(sub("\\(.*", "", ty)),  # strip (precision)
-      value_expr = ve,
-      is_literal = is_literal(ve)
-    ))
+  # --- DECLARE @a TYPE [= expr] [, @b TYPE [= expr], ...] ---
+  # T-SQL allows several variables in one DECLARE; split on top-level commas
+  # (paren- and string-aware) and parse each item independently.
+  if (grepl("^DECLARE\\s+@", t, ignore.case = TRUE, perl = TRUE)) {
+    body <- sub("(?i)^DECLARE\\s+", "", t, perl = TRUE)
+    items <- split_declare_items(body)
+    rows <- purrr::map(items, parse_declare_item)
+    return(purrr::list_rbind(c(list(empty), rows)))
   }
 
   # --- SET @var = expr ---
@@ -192,10 +230,6 @@ substitute_vars <- function(text, variables) {
       # Word-boundary, @-anchored replacement.
       # (?<![A-Za-z0-9_@]) ensures we don't match a substring like
       # @StartDateTime when replacing @StartDate.
-      pat <- paste0("(?<![A-Za-z0-9_@])", stringr::fixed(var),
-                    "(?![A-Za-z0-9_])")
-      # stringr::fixed() is for the var name, but we need regex for the
-      # anchors — use str_replace_all with a regex that quotes the var name.
       escaped <- paste0("(?<![A-Za-z0-9_@])",
                         stringr::str_escape(var),
                         "(?![A-Za-z0-9_])")

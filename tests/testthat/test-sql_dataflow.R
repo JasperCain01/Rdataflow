@@ -48,3 +48,36 @@ test_that("sql_dataflow accepts a multi-element character vector (readLines outp
   parsed_single <- parse_sql(sql_single, schema = s)
   expect_equal(build_ir(parsed_lines)$stages, build_ir(parsed_single)$stages)
 })
+
+# --- Batch A regression tests -----------------------------------------------
+
+test_that("read_sql reads UTF-16 LE files with BOM (SSMS default)", {
+  sql <- "SELECT customer_id INTO #t FROM dbo.orders;"
+  path <- tempfile(fileext = ".sql")
+  con <- file(path, open = "wb")
+  writeBin(as.raw(c(0xFF, 0xFE)), con)                       # UTF-16 LE BOM
+  writeBin(iconv(sql, from = "UTF-8", to = "UTF-16LE", toRaw = TRUE)[[1]], con)
+  close(con)
+
+  out <- read_sql(path)
+  expect_equal(out, sql)
+  unlink(path)
+})
+
+test_that("read_sql reads plain UTF-8 files unchanged", {
+  sql <- "SELECT a\nFROM t;"
+  path <- tempfile(fileext = ".sql")
+  writeLines(sql, path)
+  expect_equal(read_sql(path), sql)
+  unlink(path)
+})
+
+test_that("read_sql strips a UTF-8 BOM", {
+  path <- tempfile(fileext = ".sql")
+  con <- file(path, open = "wb")
+  writeBin(as.raw(c(0xEF, 0xBB, 0xBF)), con)                 # UTF-8 BOM
+  writeBin(charToRaw("SELECT 1"), con)
+  close(con)
+  expect_equal(read_sql(path), "SELECT 1")
+  unlink(path)
+})

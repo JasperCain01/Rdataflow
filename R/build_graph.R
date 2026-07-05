@@ -71,25 +71,32 @@ build_graph <- function(ir, schema = NULL, show_unused_cols = TRUE) {
 # SELECT statements) are excluded because they become stage nodes, not table
 # nodes. This is the cross-statement analogue of the CTE exclusion.
 make_table_nodes <- function(ir, schema, show_unused_cols = TRUE) {
-  # Lower-cased CTE names for quick membership testing.
-  cte_names <- tolower(ir$stages$name[ir$stages$role == "cte" & !is.na(ir$stages$name)])
+  # CTE names are scoped to their statement: a source ref only counts as a
+  # CTE reference when the same statement defines a CTE of that name. This
+  # stops a CTE in statement 1 from hiding a physical table of the same name
+  # referenced in statement 2.
+  is_cte <- ir$stages$role == "cte" & !is.na(ir$stages$name)
+  cte_keys <- cte_scope_key(ir$stages$statement_index[is_cte],
+                            ir$stages$name[is_cte])
 
-  # Lower-cased output_table names from any stage — these are temp tables (or
+  # Produced output_table names from any stage — these are temp tables (or
   # other produced tables) that are sources in later stages. Treating them as
   # physical table nodes would create disconnected boxes instead of edges.
-  # sqlglot strips '#' from #temp names in source references, so we exclude
-  # both the raw name ("#patients") and the stripped form ("patients").
-  raw_produced <- tolower(
-    ir$stages$output_table[!is.na(ir$stages$output_table) & nzchar(ir$stages$output_table)]
-  )
-  produced_names <- unique(c(raw_produced, sub("^#", "", raw_produced)))
+  # output_name_keys() covers the '#'-stripped and leaf-name forms sqlglot
+  # reports for source references. Produced names span statements by design.
+  produced_names <- output_name_keys(ir$stages$output_table)
 
-  exclude_names <- unique(c(cte_names, produced_names))
+  stmt_of <- stage_stmt_lookup(ir)
 
   # Unique physical source tables (first occurrence wins for the catalog/schema
   # prefix; later stages referencing the same table leaf name are de-duped).
-  phys <- ir$sources |>
-    dplyr::filter(!is.na(table), !tolower(table) %in% exclude_names) |>
+  srcs <- ir$sources
+  src_stmt <- stmt_of[as.character(srcs$stage_id)]
+  is_cte_ref <- !is.na(srcs$table) &
+    cte_scope_key(src_stmt, srcs$table) %in% cte_keys
+
+  phys <- srcs[!is.na(srcs$table) & !is_cte_ref &
+                 !(tolower(srcs$table) %in% produced_names), , drop = FALSE] |>
     dplyr::distinct(table, .keep_all = TRUE)
 
   if (nrow(phys) == 0) {
@@ -162,6 +169,7 @@ make_stage_nodes <- function(ir) {
     return(tibble::tibble(
       node_id         = character(),
       stage_id        = integer(),
+      statement_index = integer(),
       name            = character(),
       role            = character(),
       output_table    = character(),
@@ -203,6 +211,7 @@ make_stage_nodes <- function(ir) {
     tibble::tibble(
       node_id         = graph_node_id("stg", sid, stg$name),
       stage_id        = sid,
+      statement_index = stg$statement_index,
       name            = stg$name,
       role            = stg$role,
       output_table    = stg$output_table,
@@ -221,7 +230,13 @@ make_stage_nodes <- function(ir) {
 # first source in each stage is the FROM table (no join); subsequent sources
 # correspond to the JOIN clauses in order (join_index = source_index - 1).
 make_source_edges <- function(ir, tbl_nodes, stg_nodes) {
-  cte_names        <- tolower(stg_nodes$name[stg_nodes$role == "cte" & !is.na(stg_nodes$name)])
+  # Statement-scoped CTE keys: only skip a source as "CTE reference" when its
+  # own statement defines a CTE of that name.
+  is_cte <- stg_nodes$role == "cte" & !is.na(stg_nodes$name)
+  cte_keys <- cte_scope_key(stg_nodes$statement_index[is_cte],
+                            stg_nodes$name[is_cte])
+  stmt_of <- stage_stmt_lookup(ir)
+
   # as.list() is important: [[]] on a named *character* vector throws for missing
   # keys, whereas [[]] on a named *list* returns NULL, which we can test safely.
   stg_node_by_id   <- as.list(stats::setNames(stg_nodes$node_id, as.character(stg_nodes$stage_id)))
@@ -237,7 +252,8 @@ make_source_edges <- function(ir, tbl_nodes, stg_nodes) {
   for (i in seq_len(nrow(sources_idx))) {
     src <- sources_idx[i, ]
     if (is.na(src$table)) next
-    if (tolower(src$table) %in% cte_names) next  # CTE refs go to cte_edges
+    src_stmt <- stmt_of[[as.character(src$stage_id)]]
+    if (cte_scope_key(src_stmt, src$table) %in% cte_keys) next  # CTE refs go to cte_edges
 
     from_node <- tbl_node_by_name[[tolower(src$table)]]
     to_node   <- stg_node_by_id[[as.character(src$stage_id)]]
@@ -280,22 +296,28 @@ make_source_edges <- function(ir, tbl_nodes, stg_nodes) {
 }
 
 # CTE stage → downstream stage edges. Each source whose table name matches a
-# CTE stage name produces one directed edge from that CTE's stage node to the
-# consuming stage node.
+# CTE stage name *within the same statement* produces one directed edge from
+# that CTE's stage node to the consuming stage node. Scoping by statement
+# keeps same-named CTEs in different statements from cross-wiring.
 make_cte_edges <- function(ir, stg_nodes) {
   cte_stages <- stg_nodes[stg_nodes$role == "cte" & !is.na(stg_nodes$name), ]
   if (nrow(cte_stages) == 0) {
     return(tibble::tibble(from_node_id = character(), to_node_id = character()))
   }
 
-  cte_node_by_name <- as.list(stats::setNames(cte_stages$node_id, tolower(cte_stages$name)))
-  stg_node_by_id   <- as.list(stats::setNames(stg_nodes$node_id, as.character(stg_nodes$stage_id)))
+  cte_node_by_key <- as.list(stats::setNames(
+    cte_stages$node_id,
+    cte_scope_key(cte_stages$statement_index, cte_stages$name)
+  ))
+  stg_node_by_id <- as.list(stats::setNames(stg_nodes$node_id, as.character(stg_nodes$stage_id)))
+  stmt_of <- stage_stmt_lookup(ir)
 
   rows <- list()
   for (i in seq_len(nrow(ir$sources))) {
     src <- ir$sources[i, ]
     if (is.na(src$table)) next
-    from_node <- cte_node_by_name[[tolower(src$table)]]
+    src_stmt <- stmt_of[[as.character(src$stage_id)]]
+    from_node <- cte_node_by_key[[cte_scope_key(src_stmt, src$table)]]
     if (is.null(from_node)) next
 
     to_node <- stg_node_by_id[[as.character(src$stage_id)]]
@@ -327,15 +349,9 @@ make_temp_edges <- function(ir, stg_nodes) {
     return(tibble::tibble(from_node_id = character(), to_node_id = character()))
   }
 
-  # Map lower-cased output_table name → producer node_id.
-  # sqlglot strips '#' from #temp names in FROM references, so register both
-  # "#patients" and "patients" as keys for the same producer node.
-  raw_names <- tolower(producer_stages$output_table)
-  stripped_names <- sub("^#", "", raw_names)
-  prod_node_by_tbl <- c(
-    as.list(stats::setNames(producer_stages$node_id, raw_names)),
-    as.list(stats::setNames(producer_stages$node_id, stripped_names))
-  )
+  # Map every lookup variant of the output_table name (raw, '#'-stripped,
+  # leaf, both — see output_name_keys()) to the producer node_id.
+  prod_node_by_tbl <- output_node_map(producer_stages)
   stg_node_by_id <- as.list(
     stats::setNames(stg_nodes$node_id, as.character(stg_nodes$stage_id))
   )
@@ -378,25 +394,20 @@ make_col_edges <- function(ir, tbl_nodes, stg_nodes) {
     ))
   }
 
-  # CTE names — scoped within a statement.
-  cte_names <- tolower(stg_nodes$name[stg_nodes$role == "cte" & !is.na(stg_nodes$name)])
-  # Temp-table output names — produced by earlier statements.
-  # Register both "#patients" and "patients" (sqlglot strips '#' in FROM refs).
-  raw_temp <- tolower(
-    stg_nodes$output_table[!is.na(stg_nodes$output_table) & nzchar(stg_nodes$output_table)]
-  )
-  temp_names <- unique(c(raw_temp, sub("^#", "", raw_temp)))
+  # CTE stage lookup — scoped to the owning statement so same-named CTEs in
+  # different statements resolve to the right stage node.
+  is_cte <- stg_nodes$role == "cte" & !is.na(stg_nodes$name)
+  cte_node_by_key <- as.list(stats::setNames(
+    stg_nodes$node_id[is_cte],
+    cte_scope_key(stg_nodes$statement_index[is_cte], stg_nodes$name[is_cte])
+  ))
+  stmt_of <- stage_stmt_lookup(ir)
 
-  stg_node_by_id   <- as.list(stats::setNames(stg_nodes$node_id, as.character(stg_nodes$stage_id)))
-  stg_node_by_name <- as.list(stats::setNames(stg_nodes$node_id, tolower(stg_nodes$name)))
-  # For temp-table lookups, index by both raw and stripped output_table names.
-  raw_outtbl <- tolower(dplyr::coalesce(stg_nodes$output_table, ""))
-  stripped_outtbl <- sub("^#", "", raw_outtbl)
-  stg_node_by_outtbl <- c(
-    as.list(stats::setNames(stg_nodes$node_id, raw_outtbl)),
-    as.list(stats::setNames(stg_nodes$node_id, stripped_outtbl))
-  )
-  tbl_node_by_name <- as.list(stats::setNames(tbl_nodes$node_id, tolower(tbl_nodes$table)))
+  # Temp-table output names — produced by earlier statements (cross-statement
+  # by design). output_name_keys() covers '#'-stripped and leaf-name variants.
+  stg_node_by_id     <- as.list(stats::setNames(stg_nodes$node_id, as.character(stg_nodes$stage_id)))
+  stg_node_by_outtbl <- output_node_map(stg_nodes)
+  tbl_node_by_name   <- as.list(stats::setNames(tbl_nodes$node_id, tolower(tbl_nodes$table)))
 
   rows <- list()
   for (i in seq_len(nrow(ir$proj_sources))) {
@@ -407,13 +418,10 @@ make_col_edges <- function(ir, tbl_nodes, stg_nodes) {
     if (is.null(to_node)) next
 
     src_lower <- tolower(row$src_table)
-    from_node <- if (src_lower %in% cte_names) {
-      stg_node_by_name[[src_lower]]
-    } else if (src_lower %in% temp_names) {
-      stg_node_by_outtbl[[src_lower]]
-    } else {
+    src_stmt  <- stmt_of[[as.character(row$stage_id)]]
+    from_node <- cte_node_by_key[[cte_scope_key(src_stmt, src_lower)]] %||%
+      stg_node_by_outtbl[[src_lower]] %||%
       tbl_node_by_name[[src_lower]]
-    }
     if (is.null(from_node)) next
 
     rows[[length(rows) + 1L]] <- tibble::tibble(
@@ -481,6 +489,42 @@ key_cols_for_table <- function(ir, tbl_name) {
     }
   }
   unique(result)
+}
+
+# Normalise produced-table (output_table) names into every lookup key a later
+# FROM reference might use. sqlglot strips '#' from #temp names, and reports
+# only the leaf name for schema-qualified references, so "#t" / "dbo.summary"
+# must be findable as "t" / "summary" too. Input may be a character vector;
+# NA / empty entries are dropped. All keys are lower-cased.
+output_name_keys <- function(x) {
+  x <- tolower(x[!is.na(x) & nzchar(x)])
+  if (length(x) == 0L) return(character(0))
+  leaf <- sub("^.*\\.", "", x)
+  unique(c(x, sub("^#", "", x), leaf, sub("^#", "", leaf)))
+}
+
+# Named-list multimap from every output_name_keys() variant of each stage's
+# output_table to that stage's node_id. First registration wins on collision.
+output_node_map <- function(stage_tbl) {
+  key_lists <- lapply(stage_tbl$output_table, output_name_keys)
+  keys <- unlist(key_lists)
+  if (length(keys) == 0L) return(list())
+  as.list(stats::setNames(rep(stage_tbl$node_id, lengths(key_lists)), keys))
+}
+
+# Named integer lookup stage_id (as character) -> statement_index, so edge
+# builders can scope CTE-name resolution to the owning statement.
+stage_stmt_lookup <- function(ir) {
+  stats::setNames(ir$stages$statement_index, as.character(ir$stages$stage_id))
+}
+
+# Key used to match a source reference to a CTE: CTE names are scoped to
+# their statement, so two statements may each define a CTE called "base".
+# The zero-length guard matters: paste0() recycles zero-length inputs
+# against the "\r" separator, which would fabricate a bogus key.
+cte_scope_key <- function(statement_index, name) {
+  if (length(name) == 0L) return(character(0))
+  paste0(statement_index, "\r", tolower(name))
 }
 
 # Make a valid Graphviz node ID from one or more string parts. The parts are

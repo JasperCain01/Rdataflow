@@ -14,10 +14,17 @@
 
 #' Read a SQL script from a file
 #'
-#' A convenience wrapper around [readLines()] that suppresses the
-#' `"incomplete final line"` warning produced when a SQL file does not end
-#' with a newline (common when the last character is a `;`), and collapses
-#' the result into a single string ready for [sql_dataflow()].
+#' A convenience wrapper around [readLines()] that (a) detects the file's
+#' encoding from its byte-order mark — SQL Server Management Studio saves
+#' `.sql` files as UTF-16 LE with a BOM by default, which plain `readLines()`
+#' silently mangles — (b) suppresses the `"incomplete final line"` warning
+#' produced when a SQL file does not end with a newline (common when the last
+#' character is a `;`), and (c) collapses the result into a single string
+#' ready for [sql_dataflow()].
+#'
+#' Encoding detection: a UTF-16 LE/BE or UTF-8 BOM is honoured; without a
+#' BOM, a NUL byte early in the file is taken as BOM-less UTF-16 LE;
+#' otherwise the file is read as UTF-8.
 #'
 #' @param path Path to a `.sql` file.
 #' @return A length-1 character string containing the full SQL script.
@@ -30,7 +37,29 @@
 #' sql_dataflow(sql)
 #' }
 read_sql <- function(path) {
-  paste(readLines(path, warn = FALSE), collapse = "\n")
+  head_bytes <- readBin(path, "raw", n = 64L)
+
+  encoding <- if (length(head_bytes) >= 2L &&
+                  head_bytes[1] == as.raw(0xFF) && head_bytes[2] == as.raw(0xFE)) {
+    "UTF-16LE"
+  } else if (length(head_bytes) >= 2L &&
+             head_bytes[1] == as.raw(0xFE) && head_bytes[2] == as.raw(0xFF)) {
+    "UTF-16BE"
+  } else if (any(head_bytes == as.raw(0x00))) {
+    # No BOM but NUL bytes present: almost certainly BOM-less UTF-16. Even
+    # positions NUL => big-endian ASCII layout; otherwise assume LE.
+    if (length(head_bytes) >= 1L && head_bytes[1] == as.raw(0x00)) "UTF-16BE"
+    else "UTF-16LE"
+  } else {
+    "UTF-8"   # also covers the UTF-8 BOM, stripped below
+  }
+
+  con <- file(path, encoding = encoding)
+  on.exit(close(con))
+  txt <- paste(readLines(con, warn = FALSE), collapse = "\n")
+
+  # Strip a leading BOM character if the reader preserved it.
+  sub("^\uFEFF", "", txt)
 }
 
 #' Visualise the column-level data flow of a SQL script
