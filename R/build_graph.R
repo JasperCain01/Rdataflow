@@ -85,7 +85,7 @@ make_table_nodes <- function(ir, schema, show_unused_cols = TRUE,
   # CTE reference when the same statement defines a CTE of that name. This
   # stops a CTE in statement 1 from hiding a physical table of the same name
   # referenced in statement 2.
-  is_cte <- ir$stages$role == "cte" & !is.na(ir$stages$name)
+  is_cte <- ir$stages$role %in% c("cte", "subquery") & !is.na(ir$stages$name)
   cte_keys <- cte_scope_key(ir$stages$statement_index[is_cte],
                             ir$stages$name[is_cte])
 
@@ -263,7 +263,7 @@ make_stage_nodes <- function(ir) {
 make_source_edges <- function(ir, tbl_nodes, stg_nodes) {
   # Statement-scoped CTE keys: only skip a source as "CTE reference" when its
   # own statement defines a CTE of that name.
-  is_cte <- stg_nodes$role == "cte" & !is.na(stg_nodes$name)
+  is_cte <- stg_nodes$role %in% c("cte", "subquery") & !is.na(stg_nodes$name)
   cte_keys <- cte_scope_key(stg_nodes$statement_index[is_cte],
                             stg_nodes$name[is_cte])
   stmt_of <- stage_stmt_lookup(ir)
@@ -331,7 +331,8 @@ make_source_edges <- function(ir, tbl_nodes, stg_nodes) {
 # that CTE's stage node to the consuming stage node. Scoping by statement
 # keeps same-named CTEs in different statements from cross-wiring.
 make_cte_edges <- function(ir, stg_nodes) {
-  cte_stages <- stg_nodes[stg_nodes$role == "cte" & !is.na(stg_nodes$name), ]
+  cte_stages <- stg_nodes[stg_nodes$role %in% c("cte", "subquery") &
+                          !is.na(stg_nodes$name), ]
   if (nrow(cte_stages) == 0) {
     return(tibble::tibble(from_node_id = character(), to_node_id = character()))
   }
@@ -427,7 +428,7 @@ make_col_edges <- function(ir, tbl_nodes, stg_nodes) {
 
   # CTE stage lookup — scoped to the owning statement so same-named CTEs in
   # different statements resolve to the right stage node.
-  is_cte <- stg_nodes$role == "cte" & !is.na(stg_nodes$name)
+  is_cte <- stg_nodes$role %in% c("cte", "subquery") & !is.na(stg_nodes$name)
   cte_node_by_key <- as.list(stats::setNames(
     stg_nodes$node_id[is_cte],
     cte_scope_key(stg_nodes$statement_index[is_cte], stg_nodes$name[is_cte])
@@ -477,11 +478,14 @@ make_col_edges <- function(ir, tbl_nodes, stg_nodes) {
 # ---------------------------------------------------------------------------
 
 # Build a display label for a JOIN from its side ("LEFT"/"RIGHT"/"FULL"/"")
-# and kind ("INNER"/"OUTER"/"CROSS"/"") components.
-# Trailing "JOIN" is always appended so an empty pair still reads "JOIN".
+# and kind ("INNER"/"OUTER"/"CROSS"/"APPLY"/"") components.
+# Trailing "JOIN" is always appended so an empty pair still reads "JOIN" —
+# except APPLY, which is its own T-SQL operator ("CROSS APPLY", not
+# "APPLY JOIN").
 build_join_label <- function(side, kind) {
   parts <- toupper(c(side, kind))
   parts <- parts[!is.na(parts) & nzchar(parts)]
+  if ("APPLY" %in% parts) return(paste(parts, collapse = " "))
   paste(c(parts, "JOIN"), collapse = " ")
 }
 

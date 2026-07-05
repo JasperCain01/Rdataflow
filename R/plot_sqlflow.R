@@ -64,13 +64,18 @@
 #'   nodes freely.
 #' @param rankdir Graphviz layout direction: `"LR"` (default, left-to-right)
 #'   or `"TB"` (top-to-bottom; useful for tall narrow display areas).
+#' @param cluster_statements If `TRUE` (default), scripts with more than one
+#'   statement draw each statement's stages inside a labelled cluster box
+#'   ("Statement 2 -> #summary"), making multi-statement flows much easier
+#'   to read. Single-statement scripts are never clustered.
 #'
 #' @return A `DiagrammeR` htmlwidget for display in RStudio, R Markdown, or
 #'   Shiny. Hover a stage column to see the full SQL expression that computes
 #'   it; hover a join edge to see the join keys.
 #' @export
 plot_sqlflow <- function(graph, show_col_edges = TRUE, show_legend = TRUE,
-                         rank_lanes = TRUE, rankdir = c("LR", "TB")) {
+                         rank_lanes = TRUE, rankdir = c("LR", "TB"),
+                         cluster_statements = TRUE) {
   if (!requireNamespace("DiagrammeR", quietly = TRUE)) {
     rlang::abort(paste(
       "Package 'DiagrammeR' is required.",
@@ -81,10 +86,11 @@ plot_sqlflow <- function(graph, show_col_edges = TRUE, show_legend = TRUE,
   DiagrammeR::grViz(
     graph_to_dot(
       graph,
-      show_col_edges = show_col_edges,
-      show_legend    = show_legend,
-      rank_lanes     = rank_lanes,
-      rankdir        = rankdir
+      show_col_edges     = show_col_edges,
+      show_legend        = show_legend,
+      rank_lanes         = rank_lanes,
+      rankdir            = rankdir,
+      cluster_statements = cluster_statements
     )
   )
 }
@@ -104,12 +110,13 @@ plot_sqlflow <- function(graph, show_col_edges = TRUE, show_legend = TRUE,
 #' @export
 save_sqlflow <- function(graph, file, show_col_edges = TRUE,
                          show_legend = TRUE, rank_lanes = TRUE,
-                         rankdir = c("LR", "TB")) {
+                         rankdir = c("LR", "TB"), cluster_statements = TRUE) {
   stopifnot(inherits(graph, "rdataflow_graph"), is.character(file),
             length(file) == 1L)
   dot <- graph_to_dot(graph, show_col_edges = show_col_edges,
                       show_legend = show_legend, rank_lanes = rank_lanes,
-                      rankdir = rankdir)
+                      rankdir = rankdir,
+                      cluster_statements = cluster_statements)
   ext <- tolower(tools::file_ext(file))
 
   if (ext %in% c("dot", "gv")) {
@@ -151,7 +158,8 @@ save_sqlflow <- function(graph, file, show_col_edges = TRUE,
 #' @return A length-1 character string of valid DOT code.
 #' @export
 graph_to_dot <- function(graph, show_col_edges = TRUE, show_legend = TRUE,
-                         rank_lanes = TRUE, rankdir = c("LR", "TB")) {
+                         rank_lanes = TRUE, rankdir = c("LR", "TB"),
+                         cluster_statements = TRUE) {
   stopifnot(inherits(graph, "rdataflow_graph"))
   rankdir <- match.arg(rankdir)
 
@@ -164,6 +172,11 @@ graph_to_dot <- function(graph, show_col_edges = TRUE, show_legend = TRUE,
     seq_len(nrow(graph$stage_nodes)),
     function(i) dot_stage_node(graph$stage_nodes[i, ])
   )
+
+  # Multi-statement scripts: wrap each statement's stages in a labelled
+  # cluster so the reader can see statement boundaries. (newrank=true in
+  # the preamble lets rank=same constraints span clusters.)
+  stg_stmts <- maybe_cluster_stages(graph, stg_stmts, cluster_statements)
 
   # Edge statements differ by mode. In column-edge mode the structural
   # edges are still drawn (faintly, unlabelled ports) so join types and
@@ -218,11 +231,45 @@ dot_preamble <- function(rankdir = "LR") {
     "digraph sqlflow {",
     sprintf('  graph [rankdir=%s bgcolor="#fafafa" fontname="Helvetica" pad="0.4"',
             rankdir),
-    '         nodesep="0.4" ranksep="0.9" splines=polyline]',
+    '         nodesep="0.4" ranksep="0.9" splines=polyline newrank=true]',
     '  node  [shape=none margin="0" fontname="Helvetica"]',
     '  edge  [fontname="Helvetica" fontsize="9" color="#888888"]',
     ""
   )
+}
+
+# Wrap each statement's stage-node statements in a labelled cluster when the
+# script has more than one statement (and clustering is enabled). Table
+# nodes stay outside the clusters — they are shared across statements.
+maybe_cluster_stages <- function(graph, stg_stmts, cluster_statements) {
+  stmt_ids <- graph$stage_nodes$statement_index
+  distinct_stmts <- unique(stmt_ids[!is.na(stmt_ids)])
+  if (!isTRUE(cluster_statements) || length(distinct_stmts) <= 1L) {
+    return(stg_stmts)
+  }
+
+  unlist(lapply(sort(distinct_stmts), function(si) {
+    idx <- which(!is.na(stmt_ids) & stmt_ids == si)
+
+    # Cluster label: "Statement N -> output_table" when one is produced.
+    out_tbls <- graph$stage_nodes$output_table[idx]
+    out_tbls <- out_tbls[!is.na(out_tbls) & nzchar(out_tbls)]
+    lbl <- if (length(out_tbls) > 0) {
+      sprintf("Statement %d -> %s", si, out_tbls[1])
+    } else {
+      sprintf("Statement %d", si)
+    }
+
+    c(
+      sprintf("  subgraph cluster_stmt_%d {", si),
+      sprintf(paste0('    graph [label="%s" fontsize="10" ',
+                     'fontcolor="#666666" color="#cccccc" ',
+                     'style=rounded labeljust=l margin="10"]'),
+              dot_esc(lbl)),
+      paste0("  ", stg_stmts[idx]),
+      "  }"
+    )
+  }))
 }
 
 # ---------------------------------------------------------------------------
@@ -321,8 +368,10 @@ html_table_label <- function(table_label, columns_tbl, n_hidden = 0L) {
 # `where` renders as a footer row showing the stage's filter predicate.
 html_stage_label <- function(display_name, role, columns_tbl, transform_label,
                              where = NA_character_) {
-  header_bg  <- if (identical(role, "cte")) .cte_header_bg else .out_header_bg
-  role_label <- if (identical(role, "cte")) "CTE" else "output"
+  header_bg  <- if (role %in% c("cte", "subquery")) .cte_header_bg else .out_header_bg
+  role_label <- if (identical(role, "cte")) "CTE"
+                else if (identical(role, "subquery")) "subquery"
+                else "output"
 
   header <- sprintf(
     paste0(
@@ -625,7 +674,7 @@ dot_legend_subgraph <- function(graph, show_col_edges = TRUE) {
   # --- What does this graph actually contain? -------------------------------
   tbl_cols <- purrr::list_rbind(graph$table_nodes$columns)
   has_tbl  <- nrow(graph$table_nodes) > 0
-  has_cte  <- any(graph$stage_nodes$role == "cte")
+  has_cte  <- any(graph$stage_nodes$role %in% c("cte", "subquery"))
   has_out  <- any(graph$stage_nodes$role == "output")
 
   role_rows <- c(
@@ -681,7 +730,7 @@ dot_legend_subgraph <- function(graph, show_col_edges = TRUE) {
     # Node header colours
     legend_section("Node headers"),
     if (has_tbl) legend_swatch("Physical table", .tbl_header_bg, "white"),
-    if (has_cte) legend_swatch("CTE stage",      .cte_header_bg, "white"),
+    if (has_cte) legend_swatch("CTE / subquery stage", .cte_header_bg, "white"),
     if (has_out) legend_swatch("Output stage",   .out_header_bg, "white"),
 
     # Column role colours (table nodes) — only roles that occur

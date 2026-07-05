@@ -100,6 +100,8 @@ read_sql <- function(path) {
 #'   (default `Inf`). Projected and join-key columns are always kept; the
 #'   overflow is summarised as an "… n more columns" row. See [build_graph()].
 #' @param rankdir Layout direction: `"LR"` (default) or `"TB"`.
+#' @param cluster_statements If `TRUE` (default), multi-statement scripts
+#'   draw each statement's stages inside a labelled cluster box.
 #'
 #' @return A `DiagrammeR` / htmlwidget object. Displays automatically in the
 #'   RStudio Viewer, R Markdown, and Shiny. Call [graph_to_dot()] on the
@@ -148,7 +150,8 @@ read_sql <- function(path) {
 sql_dataflow <- function(sql, schema = NULL, dialect = "tsql",
                          show_col_edges = TRUE, show_unused_cols = TRUE,
                          show_legend = TRUE, rank_lanes = TRUE,
-                         max_cols = Inf, rankdir = c("LR", "TB")) {
+                         max_cols = Inf, rankdir = c("LR", "TB"),
+                         cluster_statements = TRUE) {
   stopifnot(is.character(sql), length(sql) >= 1L)
 
   # Collapse multi-element vectors (e.g. from readLines()) into one string.
@@ -164,10 +167,11 @@ sql_dataflow <- function(sql, schema = NULL, dialect = "tsql",
                             max_cols = max_cols)
   plot_sqlflow(
     graph,
-    show_col_edges = show_col_edges,
-    show_legend    = show_legend,
-    rank_lanes     = rank_lanes,
-    rankdir        = rankdir
+    show_col_edges     = show_col_edges,
+    show_legend        = show_legend,
+    rank_lanes         = rank_lanes,
+    rankdir            = rankdir,
+    cluster_statements = cluster_statements
   )
 }
 
@@ -180,7 +184,8 @@ sql_dataflow <- function(sql, schema = NULL, dialect = "tsql",
 notify_skipped <- function(skipped) {
   if (length(skipped) == 0L) return(invisible(NULL))
 
-  benign <- grepl("skipped non-SELECT statement", skipped, fixed = TRUE)
+  benign <- grepl("skipped non-SELECT statement", skipped, fixed = TRUE) |
+    grepl("wrapper unwrapped", skipped, fixed = TRUE)
 
   if (any(!benign)) {
     rlang::warn(paste0(
@@ -191,8 +196,9 @@ notify_skipped <- function(skipped) {
   }
   if (any(benign)) {
     rlang::inform(sprintf(
-      paste0("%d statement(s) with no lineage contribution ",
-             "(DROP / CREATE INDEX / INSERT ... VALUES) skipped."),
+      paste0("%d statement(s) skipped or unwrapped without lineage impact ",
+             "(DROP / CREATE INDEX / INSERT ... VALUES / transaction / ",
+             "control-flow wrappers)."),
       sum(benign)
     ))
   }

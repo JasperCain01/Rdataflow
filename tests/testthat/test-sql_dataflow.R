@@ -95,7 +95,7 @@ test_that("notify_skipped warns about real losses and messages benign skips", {
     expect_no_warning(
       notify_skipped("seq 1 (drop): skipped non-SELECT statement")
     ),
-    "no lineage contribution"
+    "without lineage impact"
   )
   # Nothing -> silence
   expect_silent(notify_skipped(character(0)))

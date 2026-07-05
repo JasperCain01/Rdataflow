@@ -90,6 +90,8 @@ explain_stage <- function(ir, stg, md = FALSE) {
 
   stage_title <- if (identical(stg$role, "cte")) {
     sprintf("Stage '%s' (CTE):", stg$name)
+  } else if (identical(stg$role, "subquery")) {
+    sprintf("Stage '%s' (derived table):", stg$name)
   } else if (!is.na(stg$output_table) && nzchar(stg$output_table)) {
     sprintf("Output stage -> %s:", stg$output_table)
   } else {

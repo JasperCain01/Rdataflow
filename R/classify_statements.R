@@ -194,6 +194,8 @@ classify_one <- function(text) {
   if (grepl("^DECLARE @", kw))                            return("declare")
   if (grepl("^SET @", kw))                                return("set_var")
   if (grepl("^DROP TABLE", kw))                           return("drop")
+  if (grepl("^BEGIN TRAN\\b|^BEGIN TRANSACTION\\b|^COMMIT\\b|^ROLLBACK\\b",
+            kw))                                          return("transaction")
 
   if (grepl("^CREATE TABLE", kw)) {
     return(if (has_depth0_select(text)) "select_into" else "create_table")
@@ -235,9 +237,9 @@ classify_one <- function(text) {
 #'   as returned by [split_statements()].
 #'
 #' @return The input tibble with an additional `kind` character column. Values:
-#'   `"declare"`, `"set_var"`, `"drop"`, `"create_index"`, `"create_table"`,
-#'   `"select_into"`, `"select"`, `"insert_select"`, `"insert_values"`,
-#'   `"unknown"`.
+#'   `"declare"`, `"set_var"`, `"drop"`, `"transaction"`, `"create_index"`,
+#'   `"create_table"`, `"select_into"`, `"select"`, `"insert_select"`,
+#'   `"insert_values"`, `"unknown"`.
 #' @export
 classify_statements <- function(statements_raw) {
   kinds <- vapply(statements_raw$text, classify_one, character(1),

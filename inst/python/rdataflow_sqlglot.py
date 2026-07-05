@@ -83,21 +83,43 @@ def _table_source(t):
     }
 
 
-def _direct_sources(select):
-    """Direct FROM + JOIN table sources of a SELECT.
+def _relation_entry(node):
+    """Normalise one FROM/JOIN relation into a source descriptor.
 
-    We deliberately read only this select's own FROM/JOIN clauses (not a
-    recursive search) so that tables inside nested subqueries are not
-    attributed to the parent stage.
+    Physical tables carry catalog/schema; derived tables (Subquery) and
+    APPLY targets (Lateral) are referenced by their alias, which matches
+    the name of the stage created for them by _derived_stages().
     """
-    sources = []
+    if isinstance(node, exp.Table):
+        return _table_source(node)
+    if isinstance(node, (exp.Subquery, exp.Lateral)):
+        name = node.alias_or_name or "subquery"
+        return {"catalog": None, "schema": None, "table": name, "alias": name}
+    return None
+
+
+def _relations(select):
+    """The direct FROM/JOIN relation nodes of a SELECT, in positional order
+    (FROM first, then each JOIN). Deliberately non-recursive so relations
+    inside nested subqueries are not attributed to the parent stage — and so
+    the positional join alignment (source i+1 <-> join i) holds."""
+    rels = []
     frm = _arg(select, "from", "from_")
-    if frm is not None:
-        for t in frm.find_all(exp.Table):
-            sources.append(_table_source(t))
+    if frm is not None and frm.this is not None:
+        rels.append(frm.this)
     for j in _arg(select, "joins") or []:
-        for t in j.find_all(exp.Table):
-            sources.append(_table_source(t))
+        if j.this is not None:
+            rels.append(j.this)
+    return rels
+
+
+def _direct_sources(select):
+    """Direct FROM + JOIN sources of a SELECT (tables and derived tables)."""
+    sources = []
+    for rel in _relations(select):
+        entry = _relation_entry(rel)
+        if entry is not None:
+            sources.append(entry)
     return sources
 
 
@@ -121,9 +143,14 @@ def _joins(select):
     out = []
     for j in _arg(select, "joins") or []:
         on = j.args.get("on")
+        kind = (j.kind or "").upper()          # INNER / OUTER / CROSS / ""
+        # CROSS/OUTER APPLY parses as a join onto a Lateral with empty kind;
+        # label it so the diagram doesn't show a bare "JOIN".
+        if not kind and isinstance(j.this, exp.Lateral):
+            kind = "APPLY"
         out.append({
-            "side": (j.side or "").upper(),   # LEFT / RIGHT / FULL / ""
-            "kind": (j.kind or "").upper(),    # INNER / OUTER / CROSS / ""
+            "side": (j.side or "").upper(),    # LEFT / RIGHT / FULL / ""
+            "kind": kind,
             "on": on.sql(dialect="tsql") if on is not None else None,
             "keys": _join_keys(on),
         })
@@ -186,31 +213,112 @@ def _statement_kind(stmt):
         return "merge"
     if isinstance(stmt, exp.Update):
         return "update"
+    if isinstance(stmt, exp.Union):
+        return "select"
     if isinstance(stmt, exp.Select):
         return "select_into" if stmt.args.get("into") is not None else "select"
     return "other"
 
 
+def _query_selects(node):
+    """Unwrap set operations into their component SELECT branches.
+
+    A plain SELECT yields itself; UNION / EXCEPT / INTERSECT trees yield
+    every leaf SELECT in order. Anything else yields nothing.
+    """
+    if isinstance(node, exp.Select):
+        return [node]
+    if isinstance(node, exp.Union):  # Except / Intersect subclass Union
+        return _query_selects(node.this) + _query_selects(node.expression)
+    if isinstance(node, exp.Subquery):
+        return _query_selects(node.this)
+    return []
+
+
+def _derived_stages(select, stages, seen):
+    """Recursively add stages for derived tables in `select`'s FROM/JOINs.
+
+    Each `JOIN (SELECT ...) alias` / `FROM (SELECT ...) alias` / APPLY
+    target becomes its own stage (role "subquery") named by its alias, so
+    its inner tables are attributed to it — not to the consuming stage —
+    and column lineage flows subquery -> consumer. Nested derived tables
+    are emitted before their consumers.
+    """
+    for rel in _relations(select):
+        if isinstance(rel, (exp.Subquery, exp.Lateral)):
+            inner = rel.this
+            if isinstance(inner, exp.Subquery):     # Lateral may wrap Subquery
+                inner = inner.this
+            name = rel.alias_or_name or "subquery"
+            for k, sel in enumerate(_query_selects(inner), start=1):
+                if id(sel) in seen:
+                    continue
+                seen.add(id(sel))
+                _derived_stages(sel, stages, seen)
+                branch = name if k == 1 else "%s (branch %d)" % (name, k)
+                stages.append(_stage_from_select(sel, branch, "subquery"))
+
+
+def _insert_columns(stmt):
+    """The explicit column list of INSERT INTO t (c1, c2, ...), or None."""
+    if not isinstance(stmt, exp.Insert):
+        return None
+    target = stmt.this
+    if isinstance(target, exp.Schema) and target.expressions:
+        return [e.name for e in target.expressions]
+    return None
+
+
 def _extract_statement(stmt, index):
     """Turn one top-level statement into its kind, output, and stages."""
     stages = []
+    seen = set()
 
-    # Each CTE is its own stage, named by its alias.
+    # Each CTE is its own stage, named by its alias. A UNION inside a CTE
+    # yields one stage per branch. Derived tables inside the CTE become
+    # their own "subquery" stages, emitted first.
+    cte_select_ids = set()
     for cte in stmt.find_all(exp.CTE):
-        inner = cte.this
-        if isinstance(inner, exp.Select):
-            stages.append(_stage_from_select(inner, cte.alias, "cte"))
+        for k, sel in enumerate(_query_selects(cte.this), start=1):
+            cte_select_ids.add(id(sel))
+            if id(sel) in seen:
+                continue
+            seen.add(id(sel))
+            _derived_stages(sel, stages, seen)
+            name = cte.alias if k == 1 else "%s (branch %d)" % (cte.alias, k)
+            stages.append(_stage_from_select(sel, name, "cte"))
 
-    # The statement's main SELECT becomes the "output" stage. For
-    # INSERT/CREATE the SELECT is nested; for SELECT it is the statement.
-    main_select = stmt if isinstance(stmt, exp.Select) else stmt.find(exp.Select)
+    # The statement's main query becomes the "output" stage(s) — one per
+    # UNION branch so no branch's lineage is silently dropped. For
+    # INSERT/CREATE the query is the nested expression; for SELECT/UNION it
+    # is the statement itself.
+    if isinstance(stmt, (exp.Select, exp.Union)):
+        query = stmt
+    else:
+        query = stmt.args.get("expression")
+        if not isinstance(query, (exp.Select, exp.Union)):
+            query = stmt.find(exp.Select)
+
     output_table = _output_table_name(stmt)
-    if main_select is not None:
-        # Avoid double-counting a CTE's select as the main select.
-        cte_selects = {id(c.this) for c in stmt.find_all(exp.CTE)}
-        if id(main_select) not in cte_selects:
-            name = output_table if output_table is not None else "result"
-            stages.append(_stage_from_select(main_select, name, "output"))
+    insert_cols = _insert_columns(stmt)
+    branches = [s for s in _query_selects(query)
+                if id(s) not in cte_select_ids] if query is not None else []
+    base_name = output_table if output_table is not None else "result"
+
+    for k, sel in enumerate(branches, start=1):
+        if id(sel) in seen:
+            continue
+        seen.add(id(sel))
+        _derived_stages(sel, stages, seen)
+        name = base_name if len(branches) == 1 \
+            else "%s (branch %d)" % (base_name, k)
+        stage = _stage_from_select(sel, name, "output")
+        # INSERT INTO t (c1, c2) SELECT a, b: the inserted columns are the
+        # INSERT list, not the SELECT aliases — rename positionally.
+        if insert_cols and len(insert_cols) == len(stage["projections"]):
+            for proj, col in zip(stage["projections"], insert_cols):
+                proj["output"] = col
+        stages.append(stage)
 
     return {
         "index": index,

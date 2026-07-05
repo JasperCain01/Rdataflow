@@ -113,9 +113,15 @@ find_py_path <- function() {
 parse_sql <- function(sql, schema = NULL, dialect = "tsql") {
   stopifnot(is.character(sql), length(sql) == 1)
 
-  # --- Step 1: split + classify -------------------------------------------
-  stmts    <- classify_statements(split_statements(sql))
-  skipped  <- character()
+  # --- Step 1: split + classify + unwrap control flow ----------------------
+  stmts <- classify_statements(split_statements(sql))
+
+  # IF / WHILE / BEGIN...END wrappers: extract the governed statements so
+  # their lineage is not lost. Conditional execution is not modelled; the
+  # notes record that caveat for the skip log.
+  unwrapped <- unwrap_control_flow(stmts)
+  stmts    <- unwrapped$statements
+  skipped  <- unwrapped$notes
 
   # Kinds that route to sqlglot (SELECT-bearing statements).
   select_kinds <- c("select", "select_into", "insert_select")
@@ -169,7 +175,8 @@ parse_sql <- function(sql, schema = NULL, dialect = "tsql") {
       }
       next
 
-    } else if (kind %in% c("drop", "create_index", "insert_values")) {
+    } else if (kind %in% c("drop", "create_index", "insert_values",
+                           "transaction")) {
       # --- skip: no lineage contribution by design (benign) ---
       skipped <- c(skipped,
                    sprintf("seq %d (%s): skipped non-SELECT statement", seq, kind))

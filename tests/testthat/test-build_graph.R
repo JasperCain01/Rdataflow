@@ -264,3 +264,44 @@ test_that("schema-qualified produced tables link producer to consumer", {
   expect_false("staging" %in% tolower(g$table_nodes$table))
   expect_equal(nrow(g$temp_edges), 1L)
 })
+
+# --- Batch E regression tests -----------------------------------------------
+
+test_that("subquery stages wire into the graph like CTEs", {
+  skip_if_not(sqlglot_available(), "sqlglot not available")
+  sql <- paste(
+    "SELECT t.x, d.n FROM dbo.t",
+    "JOIN (SELECT id, COUNT(*) AS n FROM dbo.u GROUP BY id) d ON d.id = t.id"
+  )
+  ir <- classify_transform(build_ir(parse_sql(sql)))
+  g  <- build_graph(ir)
+
+  # u is a physical table feeding the subquery stage; d is NOT a table node.
+  expect_true("u" %in% tolower(g$table_nodes$table))
+  expect_false("d" %in% tolower(g$table_nodes$table))
+  sub_node <- g$stage_nodes[g$stage_nodes$role == "subquery", ]
+  expect_equal(nrow(sub_node), 1L)
+  # edge from subquery stage into the output stage
+  out_node <- g$stage_nodes[g$stage_nodes$role == "output", ]
+  expect_true(any(g$cte_edges$from_node_id == sub_node$node_id &
+                    g$cte_edges$to_node_id == out_node$node_id))
+})
+
+test_that("multi-statement scripts produce statement clusters in DOT", {
+  skip_if_not(sqlglot_available(), "sqlglot not available")
+  sql <- paste(
+    "SELECT id INTO #a FROM dbo.t;",
+    "SELECT id INTO #b FROM dbo.u"
+  )
+  ir <- classify_transform(build_ir(parse_sql(sql)))
+  g  <- build_graph(ir)
+  dot <- graph_to_dot(g)
+  expect_match(dot, "cluster_stmt_1")
+  expect_match(dot, "cluster_stmt_2")
+  expect_match(dot, "Statement 1 -> #a", fixed = TRUE)
+  # single statement -> no clusters
+  ir1 <- classify_transform(build_ir(parse_sql("SELECT id FROM dbo.t")))
+  expect_false(grepl("cluster_stmt", graph_to_dot(build_graph(ir1))))
+  # opt-out honoured
+  expect_false(grepl("cluster_stmt", graph_to_dot(g, cluster_statements = FALSE)))
+})
