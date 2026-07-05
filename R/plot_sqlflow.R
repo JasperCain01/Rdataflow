@@ -421,7 +421,7 @@ build_col_edge_stmts <- function(col_edges) {
     row <- col_edges[i, ]
     fp  <- port_id(row$from_port)
     tp  <- port_id(row$to_port)
-    tip <- dot_esc(sprintf("%s → %s", row$from_port, row$to_port))
+    tip <- dot_esc(sprintf("%s -> %s", row$from_port, row$to_port))
     sprintf(
       '  %s:%s -> %s:%s [style=dashed color="#4a90d9" arrowsize=0.7 tooltip="%s"]',
       row$from_node_id, fp, row$to_node_id, tp, tip

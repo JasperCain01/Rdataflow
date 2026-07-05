@@ -112,3 +112,45 @@ test_that("parse_sql logs unresolved variables", {
   res <- parse_sql("SELECT a FROM dbo.t WHERE b = @never_declared")
   expect_true(any(grepl("@never_declared", res$skipped)))
 })
+
+# --- Batch D: explain_sqlflow ------------------------------------------------
+
+test_that("explain_sqlflow narrates stages, joins, grouping, and columns", {
+  skip_if_not(sqlglot_available(), "sqlglot not available")
+  s <- schema_from_list(list(
+    "dbo.customers" = c(customer_id = "INT", name = "VARCHAR", region_id = "INT"),
+    "dbo.orders"    = c(order_id = "INT", customer_id = "INT", amount = "DECIMAL")
+  ))
+  sql <- paste(
+    "WITH recent AS (SELECT o.customer_id, SUM(o.amount) AS total",
+    "FROM dbo.orders o WHERE o.amount > 0 GROUP BY o.customer_id)",
+    "SELECT c.customer_id, recent.total INTO #summary",
+    "FROM dbo.customers c JOIN recent ON recent.customer_id = c.customer_id"
+  )
+  txt <- paste(explain_sqlflow(sql, schema = s), collapse = "\n")
+
+  expect_match(txt, "Statement 1")
+  expect_match(txt, "#summary", fixed = TRUE)
+  expect_match(txt, "Stage 'recent' \\(CTE\\)")
+  expect_match(txt, "reads dbo.orders")
+  expect_match(txt, "groups by customer_id")
+  expect_match(txt, "WHERE")
+  expect_match(txt, "total = SUM")
+  expect_match(txt, "\\[aggregate\\]")
+  expect_match(txt, "joins")
+  expect_match(txt, "customer_id = ")
+  expect_match(txt, "passes through")
+})
+
+test_that("explain_sqlflow accepts an IR and produces markdown", {
+  skip_if_not(sqlglot_available(), "sqlglot not available")
+  ir <- build_ir(parse_sql("SELECT a FROM dbo.t"))
+  out <- explain_sqlflow(ir, format = "markdown")
+  expect_s3_class(out, "rdataflow_explanation")
+  expect_match(paste(out, collapse = "\n"), "## Statement 1")
+  expect_match(paste(out, collapse = "\n"), "- \\*\\*Output stage")
+})
+
+test_that("explain_sqlflow rejects invalid input", {
+  expect_error(explain_sqlflow(42), "SQL string or an rdataflow_ir")
+})
