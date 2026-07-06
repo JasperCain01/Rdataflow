@@ -87,3 +87,58 @@ test_that("case-insensitive: lowercase declare classifies as declare", {
 test_that("case-insensitive: lowercase select classifies as select", {
   expect_equal(cls("select id from t"), "select")
 })
+
+# --- Batch A regression tests -----------------------------------------------
+
+test_that("CREATE TABLE with INDEX in the name is not create_index", {
+  expect_equal(classify_one("CREATE TABLE dbo.index_stats (id INT)"),
+               "create_table")
+  expect_equal(classify_one("CREATE TABLE #index_usage (id INT)"),
+               "create_table")
+})
+
+test_that("CREATE INDEX variants classify as create_index", {
+  expect_equal(classify_one("CREATE INDEX ix_a ON t(a)"), "create_index")
+  expect_equal(classify_one("CREATE UNIQUE NONCLUSTERED INDEX ix ON t(a)"),
+               "create_index")
+  expect_equal(classify_one("CREATE CLUSTERED COLUMNSTORE INDEX ix ON t"),
+               "create_index")
+})
+
+test_that("INTO inside a string literal does not make a select_into", {
+  expect_equal(classify_one("SELECT a, 'went into town' AS note FROM t"),
+               "select")
+  expect_equal(classify_one("SELECT a INTO #t FROM t"), "select_into")
+})
+
+test_that("INTO inside a bracketed identifier does not make a select_into", {
+  expect_equal(classify_one("SELECT a AS [into] FROM t"), "select")
+})
+
+test_that("strip_comments handles nested block comments and quoted markers", {
+  expect_equal(trimws(strip_comments("SELECT 1 /* a /* b */ c */ FROM t")),
+               "SELECT 1   FROM t")
+  # comment markers inside strings are preserved
+  expect_equal(strip_comments("SELECT '--not a comment' FROM t"),
+               "SELECT '--not a comment' FROM t")
+  expect_equal(strip_comments("SELECT '/*still string*/' FROM t"),
+               "SELECT '/*still string*/' FROM t")
+})
+
+# --- Batch I regression tests (MERGE / UPDATE support) ----------------------
+
+test_that("MERGE classifies as merge", {
+  expect_equal(cls("MERGE INTO t USING s ON t.id = s.id WHEN MATCHED THEN UPDATE SET t.v = s.v"),
+               "merge")
+})
+
+test_that("plain UPDATE classifies as update", {
+  expect_equal(cls("UPDATE dbo.t SET amount = 5 WHERE id = 1"), "update")
+})
+
+test_that("UPDATE ... FROM ... JOIN classifies as update (no SELECT keyword needed)", {
+  expect_equal(
+    cls("UPDATE t SET t.amount = s.amount FROM dbo.target t JOIN dbo.source s ON s.id = t.id"),
+    "update"
+  )
+})

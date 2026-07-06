@@ -1,5 +1,7 @@
 # Rdataflow
 
+![Column-level lineage example](man/figures/fig-quickstart.svg)
+
 **Rdataflow** visualises the column-level data flow of a SQL script. Given a
 SQL script and optional database metadata, it parses the query, traces each
 column from its source table through every CTE and join to the final output,
@@ -8,9 +10,13 @@ and renders an interactive flow diagram in the RStudio Viewer.
 ## Key features
 
 - **Column-level lineage** — every column is tracked from source table to output
-- **Full catalog view** — all table columns are shown; unused columns are visually dimmed
-- **Join annotations** — join keys are highlighted; edge labels show join type (LEFT JOIN etc.)
-- **Transformation badges** — each stage flags aggregations, date calculations, CASE expressions, window functions, and more
+- **Full catalog view** — all table columns are shown; unused columns are visually dimmed (`max_cols` caps very wide tables)
+- **Join annotations** — join keys are highlighted and shown on edge labels together with the join type (`LEFT JOIN` + `r.region_id = c.region_id`)
+- **Transformation badges + tooltips** — each stage flags aggregations, date calculations, CASE expressions, window functions, and more; hover a stage column to see the full SQL expression it computes, and each stage shows its `WHERE` filter
+- **Statement clusters** — multi-statement scripts draw each statement's stages in a labelled box
+- **Textual narrative** — `explain_sqlflow()` renders the same lineage as plain text or markdown, ready to paste into a PR or doc
+- **Export** — `save_sqlflow()` writes `.dot`, `.svg`, `.png`, or `.pdf`
+- **No silent gaps** — statements that cannot be parsed are reported with a warning, never quietly dropped
 - **T-SQL first** — designed for SQL Server / T-SQL; other dialects supported via the `dialect` argument
 
 ## Installation
@@ -137,10 +143,13 @@ cat(graph_to_dot(graph))
 | Node type | Colour | Meaning |
 |-----------|--------|---------|
 | Table column — projected | light blue | column appears in SELECT |
-| Table column — join key | light amber | column used in a JOIN ON |
+| Table column — join key | light orange | column used in a JOIN ON |
 | Table column — both | mid blue | projected and a join key |
 | Table column — unused | near-white | in catalog but not referenced |
 | Stage column | varies by type | transformation category |
+
+The legend appended to each diagram is dynamic: it lists only the
+categories that actually occur in that diagram.
 
 Stage column colours by transformation type:
 
@@ -155,13 +164,80 @@ Stage column colours by transformation type:
 | arithmetic | yellow | `col * 2`, `a + b` |
 | passthrough | white | plain column reference |
 
+Column-lineage edge styles:
+
+| Role | Style | Meaning |
+|------|-------|---------|
+| value | dashed blue | ordinary source column -> output column |
+| condition | dotted light blue | column used in a `CASE WHEN` predicate |
+| partition | dotted light blue | column used in a window `PARTITION BY`/`ORDER BY` |
+| filter | dotted grey | column used in a `WHERE` predicate (edge targets the stage, not one output column) |
+
+## Textual narrative
+
+`explain_sqlflow()` produces the same lineage as prose — handy for PR
+descriptions and code review:
+
+```r
+explain_sqlflow(sql, schema = s)
+#> Statement 1 (select_into -> #summary)
+#>   Stage 'recent' (CTE):
+#>     - reads dbo.orders (as o)
+#>     - groups by customer_id
+#>     - computes:
+#>       * total = SUM([o].[amount])  [aggregate]
+#>     - passes through customer_id
+#>   Output stage -> #summary:
+#>     - reads dbo.customers (as c)
+#>     - joins recent ON recent.customer_id = c.customer_id
+#>     - left joins dbo.regions (as r) ON r.region_id = c.region_id
+#>     - passes through customer_id, region_name, total
+```
+
+Pass `format = "markdown"` for a bulleted markdown document.
+
+## Exporting diagrams
+
+```r
+g <- build_graph(classify_transform(build_ir(parse_sql(sql, schema = s))), schema = s)
+save_sqlflow(g, "flow.dot")   # raw Graphviz source, no extra dependencies
+save_sqlflow(g, "flow.svg")   # needs DiagrammeRsvg + rsvg
+save_sqlflow(g, "flow.png")
+```
+
 ## Supported SQL features
 
-- CTEs (`WITH ... AS (...)`)
-- `SELECT ... INTO #temp` and `INSERT INTO ... SELECT`
+- CTEs (`WITH ... AS (...)`), including same-named CTEs in different statements
+- Derived tables (`FROM / JOIN (SELECT ...) alias`) and `CROSS/OUTER APPLY` — each becomes its own stage
+- `UNION` / `UNION ALL` / `EXCEPT` / `INTERSECT` — every branch is traced
+- `SELECT ... INTO #temp` and `INSERT INTO ... SELECT` (explicit INSERT column lists respected)
+- `MERGE` and `UPDATE ... FROM ... JOIN` — the target table becomes an output stage fed by the `USING`/`FROM`/`JOIN` sources; `SET` assignments and `WHEN MATCHED`/`WHEN NOT MATCHED` column mappings become projections. An alias right after `UPDATE` (`UPDATE t ... FROM dbo.target t`) is resolved to the underlying `FROM`-clause table
 - `INNER`, `LEFT`, `RIGHT`, `FULL OUTER`, `CROSS` joins
-- `GROUP BY`, `HAVING`, `WHERE`
+- `GROUP BY`, `WHERE` (shown per stage; `WHERE` columns are lineage-tracked as filter edges), `HAVING`, `DISTINCT`, `TOP` (including `TOP n PERCENT`) — all shown per stage
 - Window functions (`OVER (PARTITION BY ...)`)
+- Column-level lineage distinguishes `CASE WHEN` predicate columns ("condition") and window `PARTITION BY`/`ORDER BY` columns ("partition") from ordinary value columns
 - T-SQL date functions (`DATEDIFF`, `DATEADD`, `CONVERT`, ...)
 - `CASE` expressions
-- Multi-statement scripts (each statement is a separate flow)
+- Multi-statement scripts (statement clusters in the diagram; temp-table chains connected across statements)
+- Procedural T-SQL: `DECLARE` (multi-variable) / `SET`, `IF` / `WHILE` / `BEGIN ... END` bodies (unwrapped), `BEGIN TRAN` / `COMMIT` / `ROLLBACK`, `GO` batch separators (with repeat counts)
+- SSMS file encodings: UTF-8 and UTF-16 (`read_sql()` sniffs the BOM)
+
+## Known limitations
+
+Stated plainly, because a lineage tool that hides what it can't see is
+misleading:
+
+- **Conditional execution is not modelled.** Statements inside `IF` /
+  `WHILE` blocks are unwrapped and shown as if they always run (a message
+  notes this); likewise a `MERGE`'s `WHEN MATCHED` and `WHEN NOT MATCHED`
+  branches are combined into one output stage rather than modelled as
+  alternatives.
+- **`ORDER BY` (outside a window function) is not captured** in the
+  lineage model.
+- **Same-named tables in different schemas collide** in the qualifier
+  mapping (last one wins); scoped CTE names are handled, schema-qualified
+  duplicates are not.
+- **Cursors and dynamic SQL (`EXEC sp_executesql @sql`)** cannot be traced.
+
+Every skipped or partially-processed statement is reported by
+`sql_dataflow()` — check the warnings if the diagram looks incomplete.

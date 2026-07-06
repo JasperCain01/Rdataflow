@@ -113,12 +113,21 @@ find_py_path <- function() {
 parse_sql <- function(sql, schema = NULL, dialect = "tsql") {
   stopifnot(is.character(sql), length(sql) == 1)
 
-  # --- Step 1: split + classify -------------------------------------------
-  stmts    <- classify_statements(split_statements(sql))
-  skipped  <- character()
+  # --- Step 1: split + classify + unwrap control flow ----------------------
+  stmts <- classify_statements(split_statements(sql))
 
-  # Kinds that route to sqlglot (SELECT-bearing statements).
-  select_kinds <- c("select", "select_into", "insert_select")
+  # IF / WHILE / BEGIN...END wrappers: extract the governed statements so
+  # their lineage is not lost. Conditional execution is not modelled; the
+  # notes record that caveat for the skip log.
+  unwrapped <- unwrap_control_flow(stmts)
+  stmts    <- unwrapped$statements
+  skipped  <- unwrapped$notes
+
+  # Kinds that route to sqlglot. MERGE and UPDATE have no SELECT keyword of
+  # their own, but they carry the same kind of lineage (column <- column
+  # assignments, FROM/JOIN sources) so they go through the identical
+  # variable-substitution / temp-schema-merge / isolated-parse path.
+  select_kinds <- c("select", "select_into", "insert_select", "merge", "update")
 
   # --- Step 2: thread registries forward through the script ---------------
   var_registry  <- tibble::tibble(
@@ -169,10 +178,22 @@ parse_sql <- function(sql, schema = NULL, dialect = "tsql") {
       }
       next
 
-    } else if (kind %in% c("drop", "create_index", "insert_values", "unknown")) {
-      # --- skip: no lineage contribution ---
+    } else if (kind %in% c("drop", "create_index", "insert_values",
+                           "transaction")) {
+      # --- skip: no lineage contribution by design (benign) ---
       skipped <- c(skipped,
                    sprintf("seq %d (%s): skipped non-SELECT statement", seq, kind))
+      next
+
+    } else if (kind == "unknown") {
+      # --- skip: possibly a REAL lineage loss (unsupported construct) ---
+      # Distinct wording from the benign skip so sql_dataflow() can warn the
+      # user that the diagram may be missing this statement's lineage.
+      preview <- substr(gsub("\\s+", " ", text), 1L, 60L)
+      skipped <- c(skipped, sprintf(
+        "seq %d: unrecognised statement skipped (may contain lineage): %s...",
+        seq, preview
+      ))
       next
 
     } else if (kind %in% select_kinds) {
@@ -181,6 +202,18 @@ parse_sql <- function(sql, schema = NULL, dialect = "tsql") {
       # Variable substitution: removes @vars and complex T-SQL expressions
       # before the text reaches the Python tokeniser.
       clean_text <- substitute_vars(text, var_registry)
+
+      # Any @vars still present had no usable DECLARE (unknown type and
+      # non-literal value). Log them — the statement may fail to parse.
+      leftover_vars <- unique(unlist(
+        stringr::str_extract_all(clean_text, "@[A-Za-z0-9_]+")
+      ))
+      if (length(leftover_vars) > 0L) {
+        skipped <- c(skipped, sprintf(
+          "seq %d (%s): unresolved variable(s) %s (no usable DECLARE seen)",
+          seq, kind, paste(leftover_vars, collapse = ", ")
+        ))
+      }
 
       # Determine output_table (for INSERT INTO … SELECT or SELECT … INTO).
       output_tbl <- extract_output_table(clean_text, kind)
@@ -196,6 +229,13 @@ parse_sql <- function(sql, schema = NULL, dialect = "tsql") {
       skipped <- iso$skipped_log
       parsed  <- iso$result
 
+      # Relay any Python-side skip reasons (parse/qualify/extract failures)
+      # with this statement's position attached.
+      py_skips <- as.character(unlist(parsed$skipped))
+      if (length(py_skips) > 0L) {
+        skipped <- c(skipped, sprintf("seq %d (%s): %s", seq, kind, py_skips))
+      }
+
       if (is.null(parsed) || length(parsed$statements) == 0L) {
         skipped <- c(skipped,
                      sprintf("seq %d (%s): no lineage extracted", seq, kind))
@@ -205,15 +245,34 @@ parse_sql <- function(sql, schema = NULL, dialect = "tsql") {
       # sqlglot may return multiple statements for one input (rare); take all.
       for (st in parsed$statements) {
         # Override kind and output_table with our R-level classification,
-        # which is more reliable for procedural scripts.
+        # which is more reliable for procedural scripts. UPDATE is the
+        # exception: the R text-level match captures whatever identifier
+        # follows UPDATE, which for `UPDATE t ... FROM dbo.target t` is the
+        # bare FROM alias — the Python layer resolves that to the real
+        # table (_update_target_name), so its value wins when present.
         st$kind         <- kind
-        st$output_table <- output_tbl %||% st$output_table
+        st$output_table <- if (identical(kind, "update")) {
+          # Python renders the resolved table with tsql bracket quoting
+          # ("[dbo].[target]"); strip to the plain dotted form used by the
+          # R-level matchers and the graph builder.
+          py_tbl <- st$output_table
+          if (!is.null(py_tbl)) py_tbl <- gsub("\\[([^]]*)\\]", "\\1", py_tbl)
+          py_tbl %||% output_tbl
+        } else {
+          output_tbl %||% st$output_table
+        }
         statements_out[[length(Filter(Negate(is.null), statements_out)) + 1L]] <- st
       }
 
       # After a SELECT INTO / INSERT SELECT, register the output columns in
-      # the temp registry so downstream statements can resolve them.
-      if (!is.null(output_tbl) && nzchar(output_tbl)) {
+      # the temp registry so downstream statements can resolve them. MERGE
+      # and UPDATE are excluded: their output_tbl is an *existing* physical
+      # table, and registering it here would make merge_temp_schema() treat
+      # it as authoritative and drop the table's real (fully-typed) catalog
+      # columns for every later statement — collapsing `SELECT * FROM t`
+      # down to just the columns the UPDATE/MERGE happened to touch.
+      if (!is.null(output_tbl) && nzchar(output_tbl) &&
+            kind %in% c("select_into", "insert_select")) {
         temp_registry <- register_select_output(
           temp_registry, parsed, output_tbl, origin_seq = seq
         )
@@ -237,49 +296,54 @@ parse_sql <- function(sql, schema = NULL, dialect = "tsql") {
 # Null-coalescing operator: return lhs unless it is NULL, then return rhs.
 `%||%` <- function(lhs, rhs) if (is.null(lhs)) rhs else lhs
 
+# Match a (possibly bracket-quoted, possibly schema-qualified) table
+# identifier immediately after `prefix_re` in `text`. Handles all of
+# `#temp`, `dbo.summary`, `[dbo].[summary]`, and mixed forms. Returns the
+# identifier with brackets stripped from each part, or NULL if not found.
+match_ident_after <- function(text, prefix_re) {
+  part <- "(?:\\[[^]]+\\]|[A-Za-z_#][A-Za-z0-9_#]*)"
+  re <- paste0("(?i)", prefix_re, "\\s+(", part, "(?:\\.", part, ")*)")
+  m <- regexec(re, text, perl = TRUE)
+  caps <- regmatches(text, m)[[1]]
+  if (length(caps) < 2L) return(NULL)
+  gsub("\\[([^]]*)\\]", "\\1", caps[2])
+}
+
 # Extract the output table name from a statement, given its classified kind.
 # Returns NULL when the statement has no output table.
 extract_output_table <- function(text, kind) {
+  # Statement chunks keep their comments, so anchored prefixes like
+  # ^INSERT\s+INTO or ^CREATE\s+TABLE would miss when a header comment
+  # precedes the keyword (the classifier already strips comments to decide
+  # `kind`, so the two must see the same text). Also stops \bINTO from
+  # matching inside a comment.
+  text <- trimws(strip_comments(text))
   if (kind == "select_into") {
-    # SELECT ... INTO #name ...
-    m <- regexpr("(?i)\\bINTO\\s+([A-Za-z_#][A-Za-z0-9_#.]*)", text, perl = TRUE)
-    if (m > 0L) {
-      raw <- regmatches(text, m)
-      return(trimws(sub("(?i)^INTO\\s+", "", raw, perl = TRUE)))
-    }
+    # SELECT ... INTO #name / [dbo].[name] ...
+    tbl <- match_ident_after(text, "\\bINTO")
+    if (!is.null(tbl)) return(tbl)
     # CREATE TABLE #name AS SELECT ...
-    m2 <- regexpr(
-      "(?i)^CREATE\\s+TABLE\\s+([A-Za-z_#][A-Za-z0-9_#.]*)", text, perl = TRUE
-    )
-    if (m2 > 0L) {
-      raw <- regmatches(text, m2)
-      return(trimws(sub("(?i)^CREATE\\s+TABLE\\s+", "", raw, perl = TRUE)))
-    }
-    return(NULL)
+    return(match_ident_after(text, "^CREATE\\s+TABLE"))
   }
   if (kind == "insert_select") {
-    m <- regexpr(
-      "(?i)^INSERT\\s+INTO\\s+([A-Za-z_#\\[][A-Za-z0-9_#.\\]]*)",
-      text, perl = TRUE
-    )
-    if (m > 0L) {
-      raw <- regmatches(text, m)
-      tbl <- trimws(sub("(?i)^INSERT\\s+INTO\\s+", "", raw, perl = TRUE))
-      return(gsub("^\\[|\\]$", "", tbl))
-    }
-    return(NULL)
+    return(match_ident_after(text, "^INSERT\\s+INTO"))
   }
   if (kind == "create_table") {
-    m <- regexpr(
-      "(?i)^CREATE\\s+TABLE\\s+([A-Za-z_#\\[][A-Za-z0-9_#.\\]]*)",
-      text, perl = TRUE
-    )
-    if (m > 0L) {
-      raw <- regmatches(text, m)
-      tbl <- trimws(sub("(?i)^CREATE\\s+TABLE\\s+", "", raw, perl = TRUE))
-      return(gsub("^\\[|\\]$", "", tbl))
-    }
-    return(NULL)
+    return(match_ident_after(text, "^CREATE\\s+TABLE"))
+  }
+  if (kind == "merge") {
+    # MERGE INTO <target> ...
+    return(match_ident_after(text, "^MERGE\\s+INTO"))
+  }
+  if (kind == "update") {
+    # UPDATE <target> SET ... — a text-level match, so it captures whatever
+    # identifier immediately follows UPDATE. That's the physical table for
+    # `UPDATE dbo.target SET ...`, but for `UPDATE t SET ... FROM
+    # dbo.target t JOIN ...` it captures the bare alias "t". The Python
+    # layer resolves the alias to the real table (_update_target_name), so
+    # parse_sql() prefers the Python value for UPDATE and uses this one
+    # only as a fallback when Python returned nothing.
+    return(match_ident_after(text, "^UPDATE"))
   }
   NULL
 }

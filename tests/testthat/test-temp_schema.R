@@ -116,3 +116,11 @@ test_that("forward reference (temp not yet registered) degrades to no schema", {
   result <- merge_temp_schema(sql, schema = NULL, temp_registry = reg)
   expect_null(result)
 })
+
+test_that("CREATE TABLE column parsing ignores parens in a header comment", {
+  cols <- parse_create_table_columns(
+    "/* build #t (daily) */ CREATE TABLE #t (a INT, b DATE NOT NULL)"
+  )
+  expect_equal(cols$column, c("a", "b"))
+  expect_equal(cols$type, c("INT", "DATE"))
+})

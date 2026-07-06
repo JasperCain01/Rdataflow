@@ -168,3 +168,208 @@ test_that("graph_to_dot omits rank=same when rank_lanes = FALSE", {
   dot <- graph_to_dot(g, rank_lanes = FALSE)
   expect_false(grepl("rank=same", dot, fixed = TRUE))
 })
+
+# --- Batch C regression tests -----------------------------------------------
+
+test_that("stage columns carry expression tooltips in the DOT output", {
+  skip_if_not(sqlglot_available(), "sqlglot not available")
+  ir <- classify_transform(build_ir(parse_sql(
+    "SELECT SUM(amount) AS total FROM dbo.orders GROUP BY customer_id"
+  )))
+  g <- build_graph(ir)
+  dot <- graph_to_dot(g)
+  expect_match(dot, 'TOOLTIP="SUM', fixed = TRUE)
+})
+
+test_that("WHERE predicates render as stage footers", {
+  skip_if_not(sqlglot_available(), "sqlglot not available")
+  ir <- classify_transform(build_ir(parse_sql(
+    "SELECT a FROM dbo.t WHERE b > 5"
+  )))
+  g <- build_graph(ir)
+  dot <- graph_to_dot(g)
+  expect_match(dot, "WHERE", fixed = TRUE)
+})
+
+test_that("join keys appear on structural edges", {
+  skip_if_not(sqlglot_available(), "sqlglot not available")
+  ir <- classify_transform(build_ir(parse_sql(paste(
+    "SELECT c.customer_id, o.amount FROM dbo.customers c",
+    "LEFT JOIN dbo.orders o ON o.customer_id = c.customer_id"
+  ))))
+  g <- build_graph(ir)
+  dot <- graph_to_dot(g, show_col_edges = FALSE)
+  expect_match(dot, "LEFT JOIN\\n", fixed = TRUE)   # label contains keys
+  expect_match(dot, "customer_id = ", fixed = TRUE)
+})
+
+test_that("column-edge mode still draws faint structural join edges", {
+  skip_if_not(sqlglot_available(), "sqlglot not available")
+  ir <- classify_transform(build_ir(parse_sql(paste(
+    "SELECT c.customer_id FROM dbo.customers c",
+    "LEFT JOIN dbo.orders o ON o.customer_id = c.customer_id"
+  ))))
+  g <- build_graph(ir)
+  dot <- graph_to_dot(g, show_col_edges = TRUE)
+  expect_match(dot, "LEFT JOIN", fixed = TRUE)
+})
+
+test_that("legend is dynamic — absent categories are not listed", {
+  skip_if_not(sqlglot_available(), "sqlglot not available")
+  # A single passthrough select: no window/date/case/cast anywhere.
+  ir <- classify_transform(build_ir(parse_sql("SELECT a FROM dbo.t")))
+  g <- build_graph(ir)
+  dot <- graph_to_dot(g, show_legend = TRUE)
+  expect_false(grepl(">window<", dot))
+  expect_false(grepl(">cast<", dot))
+  expect_true(grepl("Legend", dot))
+})
+
+test_that("max_cols truncates wide tables with an overflow row", {
+  skip_if_not(sqlglot_available(), "sqlglot not available")
+  s <- schema_from_list(list(
+    "dbo.wide" = stats::setNames(rep("INT", 20), paste0("c", 1:20))
+  ))
+  ir <- classify_transform(build_ir(parse_sql(
+    "SELECT c1 FROM dbo.wide", schema = s
+  )))
+  g <- build_graph(ir, schema = s, max_cols = 5)
+  wide <- g$table_nodes[g$table_nodes$table == "wide", ]
+  expect_equal(nrow(wide$columns[[1]]), 5L)
+  expect_equal(wide$n_hidden, 15L)
+  expect_match(graph_to_dot(g), "more columns")
+  # projected column is always kept
+  expect_true("c1" %in% wide$columns[[1]]$col_name)
+})
+
+test_that("rankdir=TB is honoured and save_sqlflow writes DOT files", {
+  skip_if_not(sqlglot_available(), "sqlglot not available")
+  ir <- classify_transform(build_ir(parse_sql("SELECT a FROM dbo.t")))
+  g <- build_graph(ir)
+  expect_match(graph_to_dot(g, rankdir = "TB"), "rankdir=TB", fixed = TRUE)
+
+  path <- tempfile(fileext = ".dot")
+  save_sqlflow(g, path)
+  expect_true(file.exists(path))
+  expect_match(paste(readLines(path), collapse = "\n"), "digraph sqlflow")
+  unlink(path)
+})
+
+# --- Batch H regression tests (indirect lineage: condition/partition/filter) -
+
+test_that("condition/partition column edges render dotted with role in the tooltip", {
+  skip_if_not(sqlglot_available(), "sqlglot not available")
+  s <- schema_from_list(list(
+    "dbo.t" = c(status = "INT", amount = "DECIMAL", x = "INT",
+               grp = "INT", d = "DATE")
+  ))
+  sql <- paste(
+    "SELECT CASE WHEN status = 1 THEN amount ELSE 0 END AS adj,",
+    "SUM(x) OVER (PARTITION BY grp ORDER BY d) AS running FROM dbo.t"
+  )
+  ir <- classify_transform(build_ir(parse_sql(sql, schema = s)))
+  dot <- graph_to_dot(build_graph(ir, schema = s))
+
+  expect_match(dot, 'tbl_dbo_t:status -> stg_1_result:adj \\[style=dotted color="#9bb8d4"')
+  expect_match(dot, "tooltip=\"status -> adj \\(condition\\)\"")
+  expect_match(dot, "tooltip=\"grp -> running \\(partition\\)\"")
+  # THEN/ELSE and window-argument columns keep the plain value styling
+  expect_match(dot, 'tbl_dbo_t:amount -> stg_1_result:adj \\[style=dashed color="#4a90d9"')
+})
+
+test_that("filter column edges render dotted grey and target the stage node (no port)", {
+  skip_if_not(sqlglot_available(), "sqlglot not available")
+  s <- schema_from_list(list("dbo.t" = c(a = "INT", b = "INT")))
+  ir <- classify_transform(build_ir(parse_sql("SELECT a FROM dbo.t WHERE b > 5", schema = s)))
+  g <- build_graph(ir, schema = s)
+  dot <- graph_to_dot(g)
+
+  stg_node <- g$stage_nodes[g$stage_nodes$role == "output", ]$node_id
+  expect_match(dot, sprintf('tbl_dbo_t:b -> %s \\[style=dotted color="#aaaaaa"', stg_node))
+  expect_match(dot, 'tooltip="b \\(filter\\)"')
+})
+
+test_that("legend lists condition/partition and filter entries only when present", {
+  skip_if_not(sqlglot_available(), "sqlglot not available")
+  # Plain value-only lineage: no condition/partition/filter legend rows.
+  plain_dot <- graph_to_dot(test_plot_ir())
+  expect_false(grepl("Condition/partition column", plain_dot, fixed = TRUE))
+  expect_false(grepl("Filter column", plain_dot, fixed = TRUE))
+
+  s <- schema_from_list(list("dbo.t" = c(a = "INT", b = "INT")))
+  ir <- classify_transform(build_ir(parse_sql("SELECT a FROM dbo.t WHERE b > 5", schema = s)))
+  filter_dot <- graph_to_dot(build_graph(ir, schema = s))
+  expect_match(filter_dot, "Filter column (WHERE)", fixed = TRUE)
+  expect_false(grepl("Condition/partition column", filter_dot, fixed = TRUE))
+})
+
+# --- Batch J regression tests (HAVING / DISTINCT / TOP) ---------------------
+
+test_that("html_stage_label renders a combined DISTINCT/TOP/HAVING footer", {
+  html <- html_stage_label(
+    display_name = "result", role = "output",
+    columns_tbl = tibble::tibble(col_name = "a", expr = NA_character_,
+                                 transform_type = "passthrough"),
+    transform_label = "",
+    distinct = TRUE, top = "100", having = "SUM(amount) > 100"
+  )
+  expect_match(html, "DISTINCT; TOP 100; HAVING SUM\\(amount\\) &gt; 100")
+})
+
+test_that("html_stage_label omits the modifier footer when none apply", {
+  html <- html_stage_label(
+    display_name = "result", role = "output",
+    columns_tbl = tibble::tibble(col_name = "a", expr = NA_character_,
+                                 transform_type = "passthrough"),
+    transform_label = ""
+  )
+  expect_false(grepl("DISTINCT", html, fixed = TRUE))
+  expect_false(grepl("TOP", html, fixed = TRUE))
+  expect_false(grepl("HAVING", html, fixed = TRUE))
+})
+
+test_that("graph_to_dot renders DISTINCT/TOP/HAVING for a real query", {
+  skip_if_not(sqlglot_available(), "sqlglot not available")
+  s <- schema_from_list(list("dbo.orders" = c(customer_id = "INT", amount = "DECIMAL")))
+  sql <- paste(
+    "SELECT DISTINCT TOP 100 customer_id, SUM(amount) AS total",
+    "FROM dbo.orders GROUP BY customer_id HAVING SUM(amount) > 100"
+  )
+  ir <- classify_transform(build_ir(parse_sql(sql, schema = s)))
+  dot <- graph_to_dot(build_graph(ir, schema = s))
+  expect_match(dot, "DISTINCT; TOP 100; HAVING SUM")
+})
+
+test_that("long HAVING predicates truncate in the footer with the full text on hover", {
+  skip_if_not(sqlglot_available(), "sqlglot not available")
+  s <- schema_from_list(list("dbo.orders" = c(customer_id = "INT", amount = "DECIMAL")))
+  long_having <- paste(sprintf("amount > %d", 1:10), collapse = " OR ")
+  sql <- sprintf(
+    "SELECT customer_id, SUM(amount) AS total FROM dbo.orders GROUP BY customer_id HAVING %s",
+    long_having
+  )
+  ir <- classify_transform(build_ir(parse_sql(sql, schema = s)))
+  dot <- graph_to_dot(build_graph(ir, schema = s))
+  expect_match(dot, "HAVING .*amount.* &gt; 1.*\\.\\.\\.")
+  expect_match(dot, "TOOLTIP=\"HAVING .*amount.* &gt; 1")
+})
+
+test_that("derived-table edges are labelled 'subquery', CTE edges 'CTE'", {
+  skip_if_not(sqlglot_available(), "sqlglot not available")
+  s <- schema_from_list(list(
+    "dbo.a" = c(id = "INT", v = "INT"),
+    "dbo.b" = c(id = "INT", w = "INT")
+  ))
+  sql <- "
+    WITH base AS (SELECT id, v FROM dbo.a)
+    SELECT base.id, sub.mw
+    FROM base
+    JOIN (SELECT id, MAX(w) AS mw FROM dbo.b GROUP BY id) sub
+      ON sub.id = base.id
+  "
+  g <- build_graph(classify_transform(build_ir(parse_sql(sql, schema = s))),
+                   schema = s)
+  dot <- graph_to_dot(g)
+  expect_match(dot, 'label="subquery"', fixed = TRUE)
+  expect_match(dot, 'label="CTE"', fixed = TRUE)
+})

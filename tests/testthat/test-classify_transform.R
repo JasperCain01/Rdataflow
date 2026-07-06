@@ -45,3 +45,45 @@ test_that("stage labels summarise grouping and functions", {
   expect_true(out$has_date)
   expect_true(out$has_case)
 })
+
+# --- Batch C regression tests -----------------------------------------------
+
+test_that("CASE outranks date functions in classification", {
+  expect_equal(
+    classify_projection(FALSE, FALSE, TRUE, list("DATEDIFF"),
+                        "CASE WHEN x = 1 THEN DATEDIFF(DAY, a, b) ELSE 0 END AS d"),
+    "case"
+  )
+})
+
+test_that("hyphenated literals are not classified as arithmetic", {
+  expect_equal(
+    classify_projection(FALSE, FALSE, FALSE, list(), "'2024-01-01' AS d"),
+    "passthrough"
+  )
+  expect_equal(
+    classify_projection(FALSE, FALSE, FALSE, list(), "col_a - col_b AS diff"),
+    "arithmetic"
+  )
+})
+
+test_that("window aggregates do not contribute aggregate names to stage label", {
+  skip_if_not(sqlglot_available(), "sqlglot not available")
+  sql <- paste(
+    "SELECT customer_id,",
+    "SUM(amount) OVER (PARTITION BY customer_id) AS running",
+    "FROM dbo.orders"
+  )
+  ir <- classify_transform(build_ir(parse_sql(sql)))
+  lbl <- ir$stage_transforms$label[1]
+  # SUM comes from a window projection; label should say window fn, not SUM.
+  expect_false(grepl("\\bSUM\\b", lbl))
+  expect_match(lbl, "window")
+})
+
+test_that("date function names appear in the stage label", {
+  skip_if_not(sqlglot_available(), "sqlglot not available")
+  sql <- "SELECT DATEDIFF(DAY, start_dt, end_dt) AS days FROM dbo.t"
+  ir <- classify_transform(build_ir(parse_sql(sql)))
+  expect_match(ir$stage_transforms$label[1], "DATEDIFF")
+})

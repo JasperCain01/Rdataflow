@@ -21,11 +21,13 @@
 .cte_header_bg <- "#1e6b45"   # dark green  – CTE stage headers
 .out_header_bg <- "#1a4f7a"   # dark blue   – output stage headers
 
-# Table column backgrounds
-.col_used_bg   <- "#d4edff"   # light blue  – column is projected
-.col_key_bg    <- "#fff3cd"   # light amber – column is a join key only
-.col_both_bg   <- "#c3d9f5"   # mid blue    – projected AND a key
-.col_none_bg   <- "#f9f9f9"   # near-white  – unreferenced column
+# Table column backgrounds. Note: the join-key amber is deliberately deeper
+# than the aggregate pastel (#fff3cd) used on stage nodes — the two used to
+# share a hex, which made the legend claim one colour meant two things.
+.col_used_bg   <- "#d4edff"   # light blue   – column is projected
+.col_key_bg    <- "#ffd699"   # light orange – column is a join key only
+.col_both_bg   <- "#a9c9ee"   # mid blue     – projected AND a key
+.col_none_bg   <- "#f9f9f9"   # near-white   – unreferenced column
 
 # Stage column backgrounds by transformation type
 .transform_colors <- c(
@@ -60,12 +62,20 @@
 #'   This turns parallel branches into aligned vertical lanes, making complex
 #'   multi-stage scripts easier to follow. Pass `FALSE` to let Graphviz place
 #'   nodes freely.
+#' @param rankdir Graphviz layout direction: `"LR"` (default, left-to-right)
+#'   or `"TB"` (top-to-bottom; useful for tall narrow display areas).
+#' @param cluster_statements If `TRUE` (default), scripts with more than one
+#'   statement draw each statement's stages inside a labelled cluster box
+#'   ("Statement 2 -> #summary"), making multi-statement flows much easier
+#'   to read. Single-statement scripts are never clustered.
 #'
 #' @return A `DiagrammeR` htmlwidget for display in RStudio, R Markdown, or
-#'   Shiny.
+#'   Shiny. Hover a stage column to see the full SQL expression that computes
+#'   it; hover a join edge to see the join keys.
 #' @export
 plot_sqlflow <- function(graph, show_col_edges = TRUE, show_legend = TRUE,
-                         rank_lanes = TRUE) {
+                         rank_lanes = TRUE, rankdir = c("LR", "TB"),
+                         cluster_statements = TRUE) {
   if (!requireNamespace("DiagrammeR", quietly = TRUE)) {
     rlang::abort(paste(
       "Package 'DiagrammeR' is required.",
@@ -76,11 +86,66 @@ plot_sqlflow <- function(graph, show_col_edges = TRUE, show_legend = TRUE,
   DiagrammeR::grViz(
     graph_to_dot(
       graph,
-      show_col_edges = show_col_edges,
-      show_legend    = show_legend,
-      rank_lanes     = rank_lanes
+      show_col_edges     = show_col_edges,
+      show_legend        = show_legend,
+      rank_lanes         = rank_lanes,
+      rankdir            = rankdir,
+      cluster_statements = cluster_statements
     )
   )
+}
+
+#' Save a SQL dataflow diagram to a file
+#'
+#' Renders the graph and writes it to `file`. The format is chosen by file
+#' extension: `.dot` / `.gv` write the raw Graphviz DOT source (no extra
+#' dependencies); `.svg`, `.png`, and `.pdf` render via the `DiagrammeRsvg`
+#' and `rsvg` packages (install both for image export).
+#'
+#' @inheritParams plot_sqlflow
+#' @param file Output path; extension selects the format
+#'   (`.dot`, `.gv`, `.svg`, `.png`, `.pdf`).
+#'
+#' @return Invisibly, `file`.
+#' @export
+save_sqlflow <- function(graph, file, show_col_edges = TRUE,
+                         show_legend = TRUE, rank_lanes = TRUE,
+                         rankdir = c("LR", "TB"), cluster_statements = TRUE) {
+  stopifnot(inherits(graph, "rdataflow_graph"), is.character(file),
+            length(file) == 1L)
+  dot <- graph_to_dot(graph, show_col_edges = show_col_edges,
+                      show_legend = show_legend, rank_lanes = rank_lanes,
+                      rankdir = rankdir,
+                      cluster_statements = cluster_statements)
+  ext <- tolower(tools::file_ext(file))
+
+  if (ext %in% c("dot", "gv")) {
+    writeLines(dot, file)
+    return(invisible(file))
+  }
+
+  if (!ext %in% c("svg", "png", "pdf")) {
+    rlang::abort(sprintf(
+      "Unsupported extension '.%s'. Use .dot, .gv, .svg, .png, or .pdf.", ext
+    ))
+  }
+  for (pkg in c("DiagrammeR", "DiagrammeRsvg", "rsvg")) {
+    if (!requireNamespace(pkg, quietly = TRUE)) {
+      rlang::abort(sprintf(
+        "Package '%s' is required to export .%s files. Install it with install.packages('%s').",
+        pkg, ext, pkg
+      ))
+    }
+  }
+  svg <- DiagrammeRsvg::export_svg(DiagrammeR::grViz(dot))
+  if (ext == "svg") {
+    writeLines(svg, file)
+  } else if (ext == "png") {
+    rsvg::rsvg_png(charToRaw(svg), file)
+  } else {
+    rsvg::rsvg_pdf(charToRaw(svg), file)
+  }
+  invisible(file)
 }
 
 #' Export the Graphviz DOT source for a dataflow graph
@@ -93,8 +158,10 @@ plot_sqlflow <- function(graph, show_col_edges = TRUE, show_legend = TRUE,
 #' @return A length-1 character string of valid DOT code.
 #' @export
 graph_to_dot <- function(graph, show_col_edges = TRUE, show_legend = TRUE,
-                         rank_lanes = TRUE) {
+                         rank_lanes = TRUE, rankdir = c("LR", "TB"),
+                         cluster_statements = TRUE) {
   stopifnot(inherits(graph, "rdataflow_graph"))
+  rankdir <- match.arg(rankdir)
 
   # Generate one DOT node statement per table node and stage node.
   tbl_stmts <- purrr::map_chr(
@@ -106,9 +173,22 @@ graph_to_dot <- function(graph, show_col_edges = TRUE, show_legend = TRUE,
     function(i) dot_stage_node(graph$stage_nodes[i, ])
   )
 
-  # Edge statements differ by mode.
+  # Multi-statement scripts: wrap each statement's stages in a labelled
+  # cluster so the reader can see statement boundaries. (newrank=true in
+  # the preamble lets rank=same constraints span clusters.)
+  stg_stmts <- maybe_cluster_stages(graph, stg_stmts, cluster_statements)
+
+  # Edge statements differ by mode. In column-edge mode the structural
+  # edges are still drawn (faintly, unlabelled ports) so join types and
+  # table→stage relationships stay visible; without them a joined table
+  # whose columns are all filters would float disconnected.
   edge_stmts <- if (show_col_edges) {
-    build_col_edge_stmts(graph$col_edges)
+    c(
+      build_source_edge_stmts(graph$source_edges, faint = TRUE),
+      build_cte_edge_stmts(graph$cte_edges),
+      build_temp_edge_stmts(graph$temp_edges),
+      build_col_edge_stmts(graph$col_edges)
+    )
   } else {
     c(
       build_source_edge_stmts(graph$source_edges),
@@ -124,12 +204,17 @@ graph_to_dot <- function(graph, show_col_edges = TRUE, show_legend = TRUE,
     character(0)
   }
 
-  # Optional legend cluster appended before the closing brace.
-  legend_stmts <- if (isTRUE(show_legend)) dot_legend_subgraph() else character(0)
+  # Optional legend cluster appended before the closing brace. The legend is
+  # dynamic: only categories that actually occur in this graph are listed.
+  legend_stmts <- if (isTRUE(show_legend)) {
+    dot_legend_subgraph(graph, show_col_edges)
+  } else {
+    character(0)
+  }
 
   paste(
     c(
-      dot_preamble(), tbl_stmts, "", stg_stmts, "",
+      dot_preamble(rankdir), tbl_stmts, "", stg_stmts, "",
       rank_stmts, "",
       edge_stmts, legend_stmts, "}"
     ),
@@ -141,15 +226,50 @@ graph_to_dot <- function(graph, show_col_edges = TRUE, show_legend = TRUE,
 # DOT preamble
 # ---------------------------------------------------------------------------
 
-dot_preamble <- function() {
+dot_preamble <- function(rankdir = "LR") {
   c(
     "digraph sqlflow {",
-    '  graph [rankdir=LR bgcolor="#fafafa" fontname="Helvetica" pad="0.4"',
-    '         nodesep="0.4" ranksep="0.9" splines=polyline]',
+    sprintf('  graph [rankdir=%s bgcolor="#fafafa" fontname="Helvetica" pad="0.4"',
+            rankdir),
+    '         nodesep="0.4" ranksep="0.9" splines=polyline newrank=true]',
     '  node  [shape=none margin="0" fontname="Helvetica"]',
     '  edge  [fontname="Helvetica" fontsize="9" color="#888888"]',
     ""
   )
+}
+
+# Wrap each statement's stage-node statements in a labelled cluster when the
+# script has more than one statement (and clustering is enabled). Table
+# nodes stay outside the clusters — they are shared across statements.
+maybe_cluster_stages <- function(graph, stg_stmts, cluster_statements) {
+  stmt_ids <- graph$stage_nodes$statement_index
+  distinct_stmts <- unique(stmt_ids[!is.na(stmt_ids)])
+  if (!isTRUE(cluster_statements) || length(distinct_stmts) <= 1L) {
+    return(stg_stmts)
+  }
+
+  unlist(lapply(sort(distinct_stmts), function(si) {
+    idx <- which(!is.na(stmt_ids) & stmt_ids == si)
+
+    # Cluster label: "Statement N -> output_table" when one is produced.
+    out_tbls <- graph$stage_nodes$output_table[idx]
+    out_tbls <- out_tbls[!is.na(out_tbls) & nzchar(out_tbls)]
+    lbl <- if (length(out_tbls) > 0) {
+      sprintf("Statement %d -> %s", si, out_tbls[1])
+    } else {
+      sprintf("Statement %d", si)
+    }
+
+    c(
+      sprintf("  subgraph cluster_stmt_%d {", si),
+      sprintf(paste0('    graph [label="%s" fontsize="10" ',
+                     'fontcolor="#666666" color="#cccccc" ',
+                     'style=rounded labeljust=l margin="10"]'),
+              dot_esc(lbl)),
+      paste0("  ", stg_stmts[idx]),
+      "  }"
+    )
+  }))
 }
 
 # ---------------------------------------------------------------------------
@@ -158,7 +278,8 @@ dot_preamble <- function() {
 
 # Produce a single DOT node statement for a physical table node row.
 dot_table_node <- function(row) {
-  html  <- html_table_label(row$label, row$columns[[1]])
+  n_hidden <- if ("n_hidden" %in% names(row)) row$n_hidden else 0L
+  html  <- html_table_label(row$label, row$columns[[1]], n_hidden)
   sprintf('  %s [label=<%s>]', row$node_id, html)
 }
 
@@ -168,7 +289,11 @@ dot_stage_node <- function(row) {
     display_name    = row$display_name,
     role            = row$role,
     columns_tbl     = row$columns[[1]],
-    transform_label = row$transform_label
+    transform_label = row$transform_label,
+    where           = if ("where" %in% names(row)) row$where else NA_character_,
+    having          = if ("having" %in% names(row)) row$having else NA_character_,
+    distinct        = if ("distinct" %in% names(row)) isTRUE(row$distinct) else FALSE,
+    top             = if ("top" %in% names(row)) row$top else NA_character_
   )
   sprintf('  %s [label=<%s>]', row$node_id, html)
 }
@@ -178,8 +303,9 @@ dot_stage_node <- function(row) {
 # ---------------------------------------------------------------------------
 
 # Build the HTML table label for a physical source table node.
-# columns_tbl has cols: col_name, col_type, used, is_key.
-html_table_label <- function(table_label, columns_tbl) {
+# columns_tbl has cols: col_name, col_type, used, is_key. n_hidden > 0 adds
+# an "… n more columns" overflow row (see build_graph(max_cols=)).
+html_table_label <- function(table_label, columns_tbl, n_hidden = 0L) {
   # Header row: dark background, white bold table name.
   header <- sprintf(
     paste0(
@@ -219,7 +345,21 @@ html_table_label <- function(table_label, columns_tbl) {
     )
   })
 
-  rows_str <- paste(c(header, col_rows), collapse = "")
+  # Overflow row when max_cols suppressed part of the catalog.
+  overflow <- if (n_hidden > 0L) {
+    sprintf(
+      paste0(
+        '<TR><TD COLSPAN="2" BGCOLOR="%s" ALIGN="LEFT">',
+        '<FONT COLOR="#888888" POINT-SIZE="9"><I>&#8230; %d more columns</I></FONT>',
+        '</TD></TR>'
+      ),
+      .col_none_bg, n_hidden
+    )
+  } else {
+    NULL
+  }
+
+  rows_str <- paste(c(header, col_rows, overflow), collapse = "")
   sprintf(
     '<TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="3">%s</TABLE>',
     rows_str
@@ -227,10 +367,16 @@ html_table_label <- function(table_label, columns_tbl) {
 }
 
 # Build the HTML table label for a stage node.
-# columns_tbl has cols: col_name, transform_type.
-html_stage_label <- function(display_name, role, columns_tbl, transform_label) {
-  header_bg  <- if (identical(role, "cte")) .cte_header_bg else .out_header_bg
-  role_label <- if (identical(role, "cte")) "CTE" else "output"
+# columns_tbl has cols: col_name, expr (optional), transform_type. A non-NA
+# `where` renders as a footer row showing the stage's filter predicate;
+# `distinct`/`top`/`having` render as a second, combined footer row after it.
+html_stage_label <- function(display_name, role, columns_tbl, transform_label,
+                             where = NA_character_, having = NA_character_,
+                             distinct = FALSE, top = NA_character_) {
+  header_bg  <- if (role %in% c("cte", "subquery")) .cte_header_bg else .out_header_bg
+  role_label <- if (identical(role, "cte")) "CTE"
+                else if (identical(role, "subquery")) "subquery"
+                else "output"
 
   header <- sprintf(
     paste0(
@@ -255,14 +401,27 @@ html_stage_label <- function(display_name, role, columns_tbl, transform_label) {
       ""
     }
 
+    # Hover tooltip carrying the full SELECT-list expression. Graphviz only
+    # honours TOOLTIP on a cell that also has HREF; the SVG renderer turns
+    # this into an anchor with a title, so hovering the cell shows exactly
+    # what the column computes. Skipped for plain passthrough references
+    # where the expression adds nothing.
+    expr <- if ("expr" %in% names(col)) col$expr else NA_character_
+    tooltip_attr <- if (!is.na(expr) && nzchar(expr) &&
+                        !identical(tt, "passthrough")) {
+      sprintf(' HREF="#" TOOLTIP="%s"', html_esc(expr))
+    } else {
+      ""
+    }
+
     sprintf(
       paste0(
         '<TR>',
-        '<TD PORT="%s" BGCOLOR="%s" ALIGN="LEFT">%s</TD>',
+        '<TD PORT="%s" BGCOLOR="%s" ALIGN="LEFT"%s>%s</TD>',
         '<TD BGCOLOR="%s" ALIGN="LEFT">%s</TD>',
         '</TR>'
       ),
-      pname, bg, html_esc(col$col_name), bg, type_html
+      pname, bg, tooltip_attr, html_esc(col$col_name), bg, type_html
     )
   })
 
@@ -280,7 +439,48 @@ html_stage_label <- function(display_name, role, columns_tbl, transform_label) {
     NULL
   }
 
-  rows_str <- paste(c(header, col_rows, footer), collapse = "")
+  # Filter footer: the stage's WHERE predicate, truncated for readability
+  # with the full text in a hover tooltip.
+  where_footer <- if (!is.na(where) && nzchar(where)) {
+    where_disp <- if (nchar(where) > 70L) paste0(substr(where, 1L, 67L), "...")
+                  else where
+    sprintf(
+      paste0(
+        '<TR><TD COLSPAN="2" BGCOLOR="%s" ALIGN="LEFT" HREF="#" TOOLTIP="%s">',
+        '<FONT COLOR="#8a5a00" POINT-SIZE="9">WHERE %s</FONT>',
+        '</TD></TR>'
+      ),
+      .transform_label_bg, html_esc(paste("WHERE", where)), html_esc(where_disp)
+    )
+  } else {
+    NULL
+  }
+
+  # Combined DISTINCT/TOP/HAVING footer: same styling as the WHERE footer,
+  # truncated for readability with the full text in a hover tooltip. Parts
+  # are joined "; " like the transform-summary footer above.
+  modifier_parts <- c(
+    if (isTRUE(distinct)) "DISTINCT",
+    if (!is.na(top) && nzchar(top)) paste0("TOP ", top),
+    if (!is.na(having) && nzchar(having)) paste0("HAVING ", having)
+  )
+  modifier_footer <- if (length(modifier_parts) > 0L) {
+    full <- paste(modifier_parts, collapse = "; ")
+    disp <- if (nchar(full) > 70L) paste0(substr(full, 1L, 67L), "...") else full
+    sprintf(
+      paste0(
+        '<TR><TD COLSPAN="2" BGCOLOR="%s" ALIGN="LEFT" HREF="#" TOOLTIP="%s">',
+        '<FONT COLOR="#8a5a00" POINT-SIZE="9">%s</FONT>',
+        '</TD></TR>'
+      ),
+      .transform_label_bg, html_esc(full), html_esc(disp)
+    )
+  } else {
+    NULL
+  }
+
+  rows_str <- paste(c(header, col_rows, footer, where_footer, modifier_footer),
+                    collapse = "")
   sprintf(
     '<TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="3">%s</TABLE>',
     rows_str
@@ -292,34 +492,79 @@ html_stage_label <- function(display_name, role, columns_tbl, transform_label) {
 # ---------------------------------------------------------------------------
 
 # Build DOT edge statements for column-level lineage (port-to-port edges).
+# Each edge carries a hover tooltip describing the source → target columns.
+#
+# Styling by role:
+#   value              - dashed blue (the default, exact-lineage look)
+#   condition/partition - dotted, lighter blue (#9bb8d4), tooltip suffixed
+#                        " (condition)" / " (partition)"
+#   filter              - dotted grey, targets the stage node (no to_port
+#                        since a WHERE column feeds no single output column)
 build_col_edge_stmts <- function(col_edges) {
   if (nrow(col_edges) == 0) return(character(0))
   purrr::map_chr(seq_len(nrow(col_edges)), function(i) {
-    row <- col_edges[i, ]
-    fp  <- port_id(row$from_port)
-    tp  <- port_id(row$to_port)
+    row  <- col_edges[i, ]
+    role <- if ("role" %in% names(row) && !is.na(row$role)) row$role else "value"
+    from_spec <- sprintf("%s:%s", row$from_node_id, port_id(row$from_port))
+
+    if (identical(role, "filter")) {
+      tip <- dot_esc(sprintf("%s (filter)", row$from_port))
+      return(sprintf(
+        '  %s -> %s [style=dotted color="#aaaaaa" arrowsize=0.7 tooltip="%s"]',
+        from_spec, row$to_node_id, tip
+      ))
+    }
+
+    to_spec <- sprintf("%s:%s", row$to_node_id, port_id(row$to_port))
+
+    if (role %in% c("condition", "partition")) {
+      tip <- dot_esc(sprintf("%s -> %s (%s)", row$from_port, row$to_port, role))
+      return(sprintf(
+        '  %s -> %s [style=dotted color="#9bb8d4" arrowsize=0.7 tooltip="%s"]',
+        from_spec, to_spec, tip
+      ))
+    }
+
+    tip <- dot_esc(sprintf("%s -> %s", row$from_port, row$to_port))
     sprintf(
-      '  %s:%s -> %s:%s [style=dashed color="#4a90d9" arrowsize=0.7]',
-      row$from_node_id, fp, row$to_node_id, tp
+      '  %s -> %s [style=dashed color="#4a90d9" arrowsize=0.7 tooltip="%s"]',
+      from_spec, to_spec, tip
     )
   })
 }
 
 # Build DOT edge statements for structural table→stage connections.
 # join_type is NA for the primary FROM table and a string like "LEFT JOIN"
-# for joined tables.
-build_source_edge_stmts <- function(source_edges) {
+# for joined tables; join edges are labelled with the join type AND the key
+# equalities (e.g. "LEFT JOIN\nr.region_id = c.region_id").
+#
+# faint = TRUE renders the structural skeleton underneath column-level
+# lineage edges: lighter colour, no arrowheads competing with the lineage
+# arrows, keys in the tooltip only (label stays short to reduce clutter).
+build_source_edge_stmts <- function(source_edges, faint = FALSE) {
   if (nrow(source_edges) == 0) return(character(0))
   purrr::map_chr(seq_len(nrow(source_edges)), function(i) {
     row <- source_edges[i, ]
+    keys <- if ("keys" %in% names(row)) as.character(unlist(row$keys)) else character(0)
+    keys_txt <- paste(keys, collapse = "\n")
 
     if (!is.na(row$join_type)) {
-      # Labelled with the join type; use orange to distinguish joins.
+      label <- if (faint || length(keys) == 0L) {
+        row$join_type
+      } else {
+        paste0(row$join_type, "\n", keys_txt)
+      }
+      tip <- dot_esc(paste(c(row$join_type, keys), collapse = "\n"))
+      color <- if (faint) "#e0b58a" else "#cc6600"
       sprintf(
-        '  %s -> %s [label="%s" color="#cc6600" fontcolor="#cc6600"]',
+        '  %s -> %s [label="%s" color="%s" fontcolor="%s" tooltip="%s"%s]',
         row$from_node_id, row$to_node_id,
-        html_esc(row$join_type)
+        dot_esc(label), color, color, tip,
+        if (faint) " arrowsize=0.6" else ""
       )
+    } else if (faint) {
+      sprintf('  %s -> %s [color="#cccccc" arrowsize=0.6 tooltip="FROM"]',
+              row$from_node_id, row$to_node_id)
     } else {
       sprintf('  %s -> %s', row$from_node_id, row$to_node_id)
     }
@@ -331,9 +576,13 @@ build_cte_edge_stmts <- function(cte_edges) {
   if (nrow(cte_edges) == 0) return(character(0))
   purrr::map_chr(seq_len(nrow(cte_edges)), function(i) {
     row <- cte_edges[i, ]
+    # Derived-table / APPLY stages share the CTE edge style but should not
+    # be labelled "CTE" — name the actual relationship.
+    label <- if ("from_role" %in% names(cte_edges) &&
+                 identical(row$from_role, "subquery")) "subquery" else "CTE"
     sprintf(
-      '  %s -> %s [style=dashed color="#666666" label="CTE" fontcolor="#666666"]',
-      row$from_node_id, row$to_node_id
+      '  %s -> %s [style=dashed color="#666666" label="%s" fontcolor="#666666"]',
+      row$from_node_id, row$to_node_id, label
     )
   })
 }
@@ -439,8 +688,10 @@ dot_rank_constraints <- function(node_ranks) {
 # ---------------------------------------------------------------------------
 
 # Build a Graphviz cluster subgraph containing a colour-coding legend.
-# Returns a character vector of DOT lines ready to splice into the graph body.
-dot_legend_subgraph <- function() {
+# The legend is dynamic: only entries for categories that actually occur in
+# `graph` are included, so a small diagram gets a small legend. Returns a
+# character vector of DOT lines ready to splice into the graph body.
+dot_legend_subgraph <- function(graph, show_col_edges = TRUE) {
   # Section divider row inside the legend table.
   legend_section <- function(label) {
     sprintf(
@@ -466,9 +717,9 @@ dot_legend_subgraph <- function() {
     )
   }
 
-  # Edge-type row — colored text with ASCII dashes to suggest line style.
-  legend_edge <- function(label, color, dashed = FALSE) {
-    prefix <- if (dashed) "- -  " else "---  "
+  # Edge-type row — colored text with ASCII dashes/dots to suggest line style.
+  legend_edge <- function(label, color, dashed = FALSE, dotted = FALSE) {
+    prefix <- if (dotted) "...  " else if (dashed) "- -  " else "---  "
     sprintf(
       paste0(
         '<TR><TD ALIGN="LEFT">',
@@ -478,6 +729,69 @@ dot_legend_subgraph <- function() {
       color, prefix, label
     )
   }
+
+  # --- What does this graph actually contain? -------------------------------
+  tbl_cols <- purrr::list_rbind(graph$table_nodes$columns)
+  has_tbl  <- nrow(graph$table_nodes) > 0
+  has_cte  <- any(graph$stage_nodes$role %in% c("cte", "subquery"))
+  has_out  <- any(graph$stage_nodes$role == "output")
+
+  role_rows <- c(
+    if (has_tbl && any(tbl_cols$used & !tbl_cols$is_key))
+      legend_swatch("Projected",       .col_used_bg),
+    if (has_tbl && any(tbl_cols$is_key & !tbl_cols$used))
+      legend_swatch("Join key only",   .col_key_bg),
+    if (has_tbl && any(tbl_cols$used & tbl_cols$is_key))
+      legend_swatch("Projected + key", .col_both_bg),
+    if (has_tbl && any(!tbl_cols$used & !tbl_cols$is_key))
+      legend_swatch("Unused",          .col_none_bg)
+  )
+
+  stg_cols <- purrr::list_rbind(graph$stage_nodes$columns)
+  present_types <- if (nrow(stg_cols) > 0) {
+    tt <- stg_cols$transform_type
+    tt[is.na(tt)] <- "passthrough"
+    # Preserve the canonical ordering from .transform_colors.
+    names(.transform_colors)[names(.transform_colors) %in% unique(tt)]
+  } else {
+    character(0)
+  }
+  transform_rows <- purrr::map_chr(
+    present_types,
+    function(tp) legend_swatch(tp, .transform_colors[[tp]])
+  )
+
+  has_join_edge <- nrow(graph$source_edges) > 0 &&
+    any(!is.na(graph$source_edges$join_type))
+  has_from_edge <- nrow(graph$source_edges) > 0 &&
+    any(is.na(graph$source_edges$join_type))
+
+  col_edge_roles <- if (nrow(graph$col_edges) > 0 && "role" %in% names(graph$col_edges)) {
+    graph$col_edges$role
+  } else {
+    character(0)
+  }
+  has_value_edge <- show_col_edges && nrow(graph$col_edges) > 0 &&
+    (length(col_edge_roles) == 0 || any(col_edge_roles == "value" | is.na(col_edge_roles)))
+  has_cond_part_edge <- show_col_edges && any(col_edge_roles %in% c("condition", "partition"))
+  has_filter_edge <- show_col_edges && any(col_edge_roles == "filter")
+
+  edge_rows <- c(
+    if (has_from_edge)
+      legend_edge("Source / FROM",  "#888888", dashed = FALSE),
+    if (has_join_edge)
+      legend_edge("JOIN (keys on hover)", "#cc6600", dashed = FALSE),
+    if (nrow(graph$cte_edges) > 0)
+      legend_edge("CTE reference",  "#666666", dashed = TRUE),
+    if (!is.null(graph$temp_edges) && nrow(graph$temp_edges) > 0)
+      legend_edge("#temp feed",     "#4477AA", dashed = TRUE),
+    if (has_value_edge)
+      legend_edge("Column lineage", "#4a90d9", dashed = TRUE),
+    if (has_cond_part_edge)
+      legend_edge("Condition/partition column", "#9bb8d4", dotted = TRUE),
+    if (has_filter_edge)
+      legend_edge("Filter column (WHERE)", "#aaaaaa", dotted = TRUE)
+  )
 
   rows <- c(
     # Title
@@ -489,36 +803,20 @@ dot_legend_subgraph <- function() {
 
     # Node header colours
     legend_section("Node headers"),
-    legend_swatch("Physical table", .tbl_header_bg, "white"),
-    legend_swatch("CTE stage",      .cte_header_bg, "white"),
-    legend_swatch("Output stage",   .out_header_bg, "white"),
+    if (has_tbl) legend_swatch("Physical table", .tbl_header_bg, "white"),
+    if (has_cte) legend_swatch("CTE / subquery stage", .cte_header_bg, "white"),
+    if (has_out) legend_swatch("Output stage",   .out_header_bg, "white"),
 
-    # Column role colours (table nodes)
-    legend_section("Column role (table nodes)"),
-    legend_swatch("Projected",       .col_used_bg),
-    legend_swatch("Join key only",   .col_key_bg),
-    legend_swatch("Projected + key", .col_both_bg),
-    legend_swatch("Unused",          .col_none_bg),
+    # Column role colours (table nodes) — only roles that occur
+    if (length(role_rows) > 0) c(legend_section("Column role (table nodes)"),
+                                 role_rows),
 
-    # Transformation type colours (stage nodes)
-    legend_section("Transformation (stage nodes)"),
-    legend_swatch("aggregate",   .transform_colors[["aggregate"]]),
-    legend_swatch("window",      .transform_colors[["window"]]),
-    legend_swatch("date",        .transform_colors[["date"]]),
-    legend_swatch("case",        .transform_colors[["case"]]),
-    legend_swatch("cast",        .transform_colors[["cast"]]),
-    legend_swatch("string",      .transform_colors[["string"]]),
-    legend_swatch("arithmetic",  .transform_colors[["arithmetic"]]),
-    legend_swatch("expression",  .transform_colors[["expression"]]),
-    legend_swatch("passthrough", .transform_colors[["passthrough"]]),
+    # Transformation type colours (stage nodes) — only types that occur
+    if (length(transform_rows) > 0)
+      c(legend_section("Transformation (stage nodes)"), transform_rows),
 
-    # Edge types
-    legend_section("Edges"),
-    legend_edge("Source / FROM",  "#888888", dashed = FALSE),
-    legend_edge("JOIN",           "#cc6600", dashed = FALSE),
-    legend_edge("CTE reference",  "#666666", dashed = TRUE),
-    legend_edge("#temp feed",     "#4477AA", dashed = TRUE),
-    legend_edge("Column lineage", "#4a90d9", dashed = TRUE)
+    # Edge types — only styles that occur
+    if (length(edge_rows) > 0) c(legend_section("Edges"), edge_rows)
   )
 
   table_html <- sprintf(
@@ -561,6 +859,14 @@ transform_bgcolor <- function(type) {
 # any character outside [a-zA-Z0-9_] with an underscore.
 port_id <- function(col_name) {
   stringr::str_replace_all(as.character(col_name), "[^a-zA-Z0-9_]", "_")
+}
+
+# Escape a string for use inside a double-quoted DOT attribute value.
+# Newlines become the DOT "\n" line-break escape.
+dot_esc <- function(x) {
+  x <- gsub("\\", "\\\\", as.character(x), fixed = TRUE)
+  x <- gsub("\"", "\\\"", x, fixed = TRUE)
+  gsub("\n", "\\n", x, fixed = TRUE)
 }
 
 # Escape HTML special characters so column names / labels render literally

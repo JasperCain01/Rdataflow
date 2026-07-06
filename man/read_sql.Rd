@@ -13,10 +13,18 @@ read_sql(path)
 A length-1 character string containing the full SQL script.
 }
 \description{
-A convenience wrapper around \code{\link[=readLines]{readLines()}} that suppresses the
-\code{"incomplete final line"} warning produced when a SQL file does not end
-with a newline (common when the last character is a \verb{;}), and collapses
-the result into a single string ready for \code{\link[=sql_dataflow]{sql_dataflow()}}.
+A convenience wrapper around \code{\link[=readLines]{readLines()}} that (a) detects the file's
+encoding from its byte-order mark — SQL Server Management Studio saves
+\code{.sql} files as UTF-16 LE with a BOM by default, which plain \code{readLines()}
+silently mangles — (b) suppresses the \code{"incomplete final line"} warning
+produced when a SQL file does not end with a newline (common when the last
+character is a \verb{;}), and (c) collapses the result into a single string
+ready for \code{\link[=sql_dataflow]{sql_dataflow()}}.
+}
+\details{
+Encoding detection: a UTF-16 LE/BE or UTF-8 BOM is honoured; without a
+BOM, a NUL byte early in the file is taken as BOM-less UTF-16 LE;
+otherwise the file is read as UTF-8.
 }
 \examples{
 \dontrun{

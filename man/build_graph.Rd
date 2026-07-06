@@ -4,7 +4,7 @@
 \alias{build_graph}
 \title{Build the flow graph from a lineage IR}
 \usage{
-build_graph(ir, schema = NULL, show_unused_cols = TRUE)
+build_graph(ir, schema = NULL, show_unused_cols = TRUE, max_cols = Inf)
 }
 \arguments{
 \item{ir}{An \code{rdataflow_ir} (see \code{\link[=build_ir]{build_ir()}}). Passing it through
@@ -19,6 +19,13 @@ with used/key flags; without it, only columns seen in the query are shown.}
 catalog column, with unused ones rendered in white. If \code{FALSE}, only
 columns that are projected or used as join keys are shown, producing a
 more compact diagram.}
+
+\item{max_cols}{Maximum number of column rows to display per table node
+(default \code{Inf} = no limit). Columns that are projected or used as join
+keys are always kept; unused catalog columns fill the remaining space
+and any overflow is summarised as an "… n more columns" row. Useful
+against wide warehouse tables where a full catalog listing would make
+the node unreadably tall.}
 }
 \value{
 An object of class \code{rdataflow_graph} (a named list of tibbles; see

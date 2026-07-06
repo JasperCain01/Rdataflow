@@ -19,6 +19,10 @@
 #
 # Returns a tibble {column, type, ordinal}.
 parse_create_table_columns <- function(text) {
+  # Strip comments first: a header comment containing a parenthesis
+  # ("/* build #t (daily) */ CREATE TABLE #t (...)") would otherwise be
+  # mistaken for the column-definition list.
+  text <- strip_comments(text)
   # Extract everything between the first '(' and the matching closing ')'.
   open <- regexpr("(", text, fixed = TRUE)
   if (open == -1L) {

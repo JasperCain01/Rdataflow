@@ -15,7 +15,8 @@ A tibble with columns \code{name} (chr, e.g. \code{"@StartDate"}), \code{type}
 \code{NA}), \code{is_literal} (lgl).
 }
 \description{
-Parses a \verb{DECLARE @var TYPE [= value_expr]} or \code{SET @var = value_expr}
-statement and returns a one-row tibble describing the variable. Returns a
-zero-row tibble for statements that are not DECLARE/SET.
+Parses a \verb{DECLARE @var TYPE [= value_expr]} (one or more comma-separated
+variables) or \code{SET @var = value_expr} statement and returns one row per
+declared variable. Returns a zero-row tibble for statements that are not
+DECLARE/SET.
 }

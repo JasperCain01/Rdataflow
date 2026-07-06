@@ -11,7 +11,10 @@ sql_dataflow(
   show_col_edges = TRUE,
   show_unused_cols = TRUE,
   show_legend = TRUE,
-  rank_lanes = TRUE
+  rank_lanes = TRUE,
+  max_cols = Inf,
+  rankdir = c("LR", "TB"),
+  cluster_statements = TRUE
 )
 }
 \arguments{
@@ -40,12 +43,22 @@ diagram becomes too tall to view comfortably.}
 
 \item{show_legend}{If \code{TRUE} (default), a colour-coding legend is appended
 to the diagram, explaining node header colours, column role colours,
-transformation type colours, and edge styles.}
+transformation type colours, and edge styles. Only categories present in
+the diagram are listed.}
 
 \item{rank_lanes}{If \code{TRUE} (default), nodes at the same dependency depth
 are aligned in the same column using \code{rank=same} constraints. This turns
 parallel branches into aligned vertical lanes. Pass \code{FALSE} to let
 Graphviz place nodes freely.}
+
+\item{max_cols}{Maximum number of column rows to display per table node
+(default \code{Inf}). Projected and join-key columns are always kept; the
+overflow is summarised as an "… n more columns" row. See \code{\link[=build_graph]{build_graph()}}.}
+
+\item{rankdir}{Layout direction: \code{"LR"} (default) or \code{"TB"}.}
+
+\item{cluster_statements}{If \code{TRUE} (default), multi-statement scripts
+draw each statement's stages inside a labelled cluster box.}
 }
 \value{
 A \code{DiagrammeR} / htmlwidget object. Displays automatically in the
