@@ -164,6 +164,15 @@ Stage column colours by transformation type:
 | arithmetic | yellow | `col * 2`, `a + b` |
 | passthrough | white | plain column reference |
 
+Column-lineage edge styles:
+
+| Role | Style | Meaning |
+|------|-------|---------|
+| value | dashed blue | ordinary source column -> output column |
+| condition | dotted light blue | column used in a `CASE WHEN` predicate |
+| partition | dotted light blue | column used in a window `PARTITION BY`/`ORDER BY` |
+| filter | dotted grey | column used in a `WHERE` predicate (edge targets the stage, not one output column) |
+
 ## Textual narrative
 
 `explain_sqlflow()` produces the same lineage as prose — handy for PR
@@ -203,8 +212,9 @@ save_sqlflow(g, "flow.png")
 - `UNION` / `UNION ALL` / `EXCEPT` / `INTERSECT` — every branch is traced
 - `SELECT ... INTO #temp` and `INSERT INTO ... SELECT` (explicit INSERT column lists respected)
 - `INNER`, `LEFT`, `RIGHT`, `FULL OUTER`, `CROSS` joins
-- `GROUP BY`, `WHERE` (shown per stage)
+- `GROUP BY`, `WHERE` (shown per stage; `WHERE` columns are lineage-tracked as filter edges)
 - Window functions (`OVER (PARTITION BY ...)`)
+- Column-level lineage distinguishes `CASE WHEN` predicate columns ("condition") and window `PARTITION BY`/`ORDER BY` columns ("partition") from ordinary value columns
 - T-SQL date functions (`DATEDIFF`, `DATEADD`, `CONVERT`, ...)
 - `CASE` expressions
 - Multi-statement scripts (statement clusters in the diagram; temp-table chains connected across statements)
@@ -223,8 +233,6 @@ misleading:
   a warning.
 - **`HAVING`, `DISTINCT`, `TOP`, and `ORDER BY` are not captured** in the
   lineage model.
-- **WHERE-clause columns are not lineage-tracked** — filters are displayed
-  per stage, but a column used only in a filter contributes no edge.
 - **Same-named tables in different schemas collide** in the qualifier
   mapping (last one wins); scoped CTE names are handled, schema-qualified
   duplicates are not.

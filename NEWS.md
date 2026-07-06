@@ -52,6 +52,24 @@
 * `read_sql()` detects UTF-16 LE/BE byte-order marks (the SSMS default
   save format), BOM-less UTF-16, and strips UTF-8 BOMs.
 
+* An introductory vignette (`vignette("rdataflow")`) walks through
+  `schema_from_list()` -> `sql_dataflow()` -> `explain_sqlflow()` ->
+  the structural overview mode -> `max_cols` -> multi-statement temp-table
+  chaining, with pre-generated example diagrams.
+
+* Column lineage now distinguishes *how* a source column is used, not just
+  that it is: columns in a `CASE WHEN` predicate are tagged `"condition"`,
+  columns in a window's `PARTITION BY` / `ORDER BY` are tagged
+  `"partition"`, and everything else is `"value"`. Diagrams render
+  condition/partition edges dotted in a lighter blue, with the role named
+  on hover.
+
+* `WHERE`-clause columns are now traced as lineage edges (role `"filter"`):
+  a dotted grey edge from the source column to the stage it filters
+  (targeting the stage itself, since a filter narrows rows rather than
+  feeding one output column). Previously a column used only in a `WHERE`
+  predicate contributed no edge at all.
+
 ### Bug fixes
 
 * `GO` is only treated as a batch terminator when it is the first token on

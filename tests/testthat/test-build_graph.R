@@ -305,3 +305,45 @@ test_that("multi-statement scripts produce statement clusters in DOT", {
   # opt-out honoured
   expect_false(grepl("cluster_stmt", graph_to_dot(g, cluster_statements = FALSE)))
 })
+
+# --- Batch H regression tests (indirect lineage: condition/partition/filter) -
+
+test_that("build_graph col_edges carry role, defaulting to 'value'", {
+  skip_if_not(sqlglot_available(), "sqlglot not available")
+  g <- build_graph(test_graph_ir())
+  expect_true("role" %in% names(g$col_edges))
+  expect_true(all(g$col_edges$role == "value"))
+})
+
+test_that("build_graph col_edges tag CASE/window columns with condition/partition roles", {
+  skip_if_not(sqlglot_available(), "sqlglot not available")
+  s <- schema_from_list(list(
+    "dbo.t" = c(status = "INT", amount = "DECIMAL", x = "INT",
+               grp = "INT", d = "DATE")
+  ))
+  sql <- paste(
+    "SELECT CASE WHEN status = 1 THEN amount ELSE 0 END AS adj,",
+    "SUM(x) OVER (PARTITION BY grp ORDER BY d) AS running FROM dbo.t"
+  )
+  ir <- classify_transform(build_ir(parse_sql(sql, schema = s)))
+  g <- build_graph(ir, schema = s)
+
+  expect_equal(g$col_edges$role[g$col_edges$from_port == "status"], "condition")
+  expect_equal(g$col_edges$role[g$col_edges$from_port == "amount"], "value")
+  expect_equal(g$col_edges$role[g$col_edges$from_port == "grp"], "partition")
+  expect_equal(g$col_edges$role[g$col_edges$from_port == "d"], "partition")
+})
+
+test_that("build_graph col_edges include a filter edge with no to_port for WHERE columns", {
+  skip_if_not(sqlglot_available(), "sqlglot not available")
+  s <- schema_from_list(list("dbo.t" = c(a = "INT", b = "INT")))
+  ir <- classify_transform(build_ir(parse_sql("SELECT a FROM dbo.t WHERE b > 5", schema = s)))
+  g <- build_graph(ir, schema = s)
+
+  filt <- g$col_edges[g$col_edges$role == "filter", ]
+  expect_equal(nrow(filt), 1L)
+  expect_equal(filt$from_port, "b")
+  expect_true(is.na(filt$to_port))
+  stg_node <- g$stage_nodes[g$stage_nodes$role == "output", ]
+  expect_equal(filt$to_node_id, stg_node$node_id)
+})

@@ -40,3 +40,48 @@ test_that("build_ir captures joins, keys, and group bys", {
   expect_equal(nrow(ir$join_keys), 2)
   expect_equal(nrow(ir$group_by), 1)
 })
+
+# --- Batch H regression tests (indirect lineage: condition/partition/filter) -
+
+test_that("proj_sources carries a role column defaulting to 'value'", {
+  skip_if_not(sqlglot_available(), "sqlglot not available")
+  ir <- test_ir()
+  expect_true("role" %in% names(ir$proj_sources))
+  expect_true(all(ir$proj_sources$role == "value"))
+})
+
+test_that("proj_sources tags CASE WHEN / window columns with their role", {
+  skip_if_not(sqlglot_available(), "sqlglot not available")
+  s <- schema_from_list(list(
+    "dbo.t" = c(status = "INT", amount = "DECIMAL", x = "INT",
+               grp = "INT", d = "DATE")
+  ))
+  sql <- paste(
+    "SELECT CASE WHEN status = 1 THEN amount ELSE 0 END AS adj,",
+    "SUM(x) OVER (PARTITION BY grp ORDER BY d) AS running FROM dbo.t"
+  )
+  ir <- build_ir(parse_sql(sql, schema = s))
+  ps <- ir$proj_sources
+
+  expect_equal(ps$role[ps$src_column == "status"], "condition")
+  expect_equal(ps$role[ps$src_column == "amount"], "value")
+  expect_equal(ps$role[ps$src_column == "x"], "value")
+  expect_equal(ps$role[ps$src_column == "grp"], "partition")
+  expect_equal(ps$role[ps$src_column == "d"], "partition")
+})
+
+test_that("build_ir captures WHERE-clause columns in the filters tibble", {
+  skip_if_not(sqlglot_available(), "sqlglot not available")
+  s <- schema_from_list(list("dbo.t" = c(a = "INT", b = "INT")))
+  ir <- build_ir(parse_sql("SELECT a FROM dbo.t WHERE b > 5", schema = s))
+  expect_equal(nrow(ir$filters), 1)
+  expect_equal(ir$filters$src_column, "b")
+  expect_equal(ir$filters$src_table, "t")
+})
+
+test_that("build_ir returns an empty typed filters tibble when there is no WHERE", {
+  skip_if_not(sqlglot_available(), "sqlglot not available")
+  ir <- test_ir()
+  expect_equal(nrow(ir$filters), 0)
+  expect_setequal(names(ir$filters), c("stage_id", "src_alias", "src_table", "src_column"))
+})

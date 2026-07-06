@@ -107,3 +107,42 @@ test_that("CROSS APPLY becomes a subquery stage with an APPLY join", {
   out <- stages[[which(roles == "output")]]
   expect_equal(out$joins[[1]]$kind, "APPLY")
 })
+
+# --- Batch H regression tests (indirect lineage: condition/partition/filter) -
+
+test_that("CASE WHEN predicate columns are 'condition', THEN/ELSE columns 'value'", {
+  skip_if_not(sqlglot_available(), "sqlglot not available")
+  sql <- "SELECT CASE WHEN status = 1 THEN amount ELSE 0 END AS adj FROM dbo.t"
+  res <- parse_sql(sql)
+  proj <- res$statements[[1]]$stages[[1]]$projections[[1]]
+  cols <- proj$columns
+  roles_by_name <- stats::setNames(
+    vapply(cols, function(c) c$role, character(1)),
+    vapply(cols, function(c) c$name, character(1))
+  )
+  expect_equal(roles_by_name[["status"]], "condition")
+  expect_equal(roles_by_name[["amount"]], "value")
+})
+
+test_that("window PARTITION BY / ORDER BY columns are 'partition'", {
+  skip_if_not(sqlglot_available(), "sqlglot not available")
+  sql <- "SELECT SUM(x) OVER (PARTITION BY grp ORDER BY d) AS running FROM dbo.t"
+  res <- parse_sql(sql)
+  proj <- res$statements[[1]]$stages[[1]]$projections[[1]]
+  cols <- proj$columns
+  roles_by_name <- stats::setNames(
+    vapply(cols, function(c) c$role, character(1)),
+    vapply(cols, function(c) c$name, character(1))
+  )
+  expect_equal(roles_by_name[["x"]], "value")
+  expect_equal(roles_by_name[["grp"]], "partition")
+  expect_equal(roles_by_name[["d"]], "partition")
+})
+
+test_that("WHERE-clause columns are captured as where_columns", {
+  skip_if_not(sqlglot_available(), "sqlglot not available")
+  res <- parse_sql("SELECT a FROM dbo.t WHERE b > 5")
+  stg <- res$statements[[1]]$stages[[1]]
+  where_cols <- vapply(stg$where_columns, function(c) c$name, character(1))
+  expect_equal(where_cols, "b")
+})

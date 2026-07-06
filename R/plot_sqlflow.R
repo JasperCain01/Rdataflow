@@ -464,16 +464,42 @@ html_stage_label <- function(display_name, role, columns_tbl, transform_label,
 
 # Build DOT edge statements for column-level lineage (port-to-port edges).
 # Each edge carries a hover tooltip describing the source → target columns.
+#
+# Styling by role:
+#   value              - dashed blue (the default, exact-lineage look)
+#   condition/partition - dotted, lighter blue (#9bb8d4), tooltip suffixed
+#                        " (condition)" / " (partition)"
+#   filter              - dotted grey, targets the stage node (no to_port
+#                        since a WHERE column feeds no single output column)
 build_col_edge_stmts <- function(col_edges) {
   if (nrow(col_edges) == 0) return(character(0))
   purrr::map_chr(seq_len(nrow(col_edges)), function(i) {
-    row <- col_edges[i, ]
-    fp  <- port_id(row$from_port)
-    tp  <- port_id(row$to_port)
+    row  <- col_edges[i, ]
+    role <- if ("role" %in% names(row) && !is.na(row$role)) row$role else "value"
+    from_spec <- sprintf("%s:%s", row$from_node_id, port_id(row$from_port))
+
+    if (identical(role, "filter")) {
+      tip <- dot_esc(sprintf("%s (filter)", row$from_port))
+      return(sprintf(
+        '  %s -> %s [style=dotted color="#aaaaaa" arrowsize=0.7 tooltip="%s"]',
+        from_spec, row$to_node_id, tip
+      ))
+    }
+
+    to_spec <- sprintf("%s:%s", row$to_node_id, port_id(row$to_port))
+
+    if (role %in% c("condition", "partition")) {
+      tip <- dot_esc(sprintf("%s -> %s (%s)", row$from_port, row$to_port, role))
+      return(sprintf(
+        '  %s -> %s [style=dotted color="#9bb8d4" arrowsize=0.7 tooltip="%s"]',
+        from_spec, to_spec, tip
+      ))
+    }
+
     tip <- dot_esc(sprintf("%s -> %s", row$from_port, row$to_port))
     sprintf(
-      '  %s:%s -> %s:%s [style=dashed color="#4a90d9" arrowsize=0.7 tooltip="%s"]',
-      row$from_node_id, fp, row$to_node_id, tp, tip
+      '  %s -> %s [style=dashed color="#4a90d9" arrowsize=0.7 tooltip="%s"]',
+      from_spec, to_spec, tip
     )
   })
 }
@@ -658,9 +684,9 @@ dot_legend_subgraph <- function(graph, show_col_edges = TRUE) {
     )
   }
 
-  # Edge-type row — colored text with ASCII dashes to suggest line style.
-  legend_edge <- function(label, color, dashed = FALSE) {
-    prefix <- if (dashed) "- -  " else "---  "
+  # Edge-type row — colored text with ASCII dashes/dots to suggest line style.
+  legend_edge <- function(label, color, dashed = FALSE, dotted = FALSE) {
+    prefix <- if (dotted) "...  " else if (dashed) "- -  " else "---  "
     sprintf(
       paste0(
         '<TR><TD ALIGN="LEFT">',
@@ -706,6 +732,17 @@ dot_legend_subgraph <- function(graph, show_col_edges = TRUE) {
     any(!is.na(graph$source_edges$join_type))
   has_from_edge <- nrow(graph$source_edges) > 0 &&
     any(is.na(graph$source_edges$join_type))
+
+  col_edge_roles <- if (nrow(graph$col_edges) > 0 && "role" %in% names(graph$col_edges)) {
+    graph$col_edges$role
+  } else {
+    character(0)
+  }
+  has_value_edge <- show_col_edges && nrow(graph$col_edges) > 0 &&
+    (length(col_edge_roles) == 0 || any(col_edge_roles == "value" | is.na(col_edge_roles)))
+  has_cond_part_edge <- show_col_edges && any(col_edge_roles %in% c("condition", "partition"))
+  has_filter_edge <- show_col_edges && any(col_edge_roles == "filter")
+
   edge_rows <- c(
     if (has_from_edge)
       legend_edge("Source / FROM",  "#888888", dashed = FALSE),
@@ -715,8 +752,12 @@ dot_legend_subgraph <- function(graph, show_col_edges = TRUE) {
       legend_edge("CTE reference",  "#666666", dashed = TRUE),
     if (!is.null(graph$temp_edges) && nrow(graph$temp_edges) > 0)
       legend_edge("#temp feed",     "#4477AA", dashed = TRUE),
-    if (show_col_edges && nrow(graph$col_edges) > 0)
-      legend_edge("Column lineage", "#4a90d9", dashed = TRUE)
+    if (has_value_edge)
+      legend_edge("Column lineage", "#4a90d9", dashed = TRUE),
+    if (has_cond_part_edge)
+      legend_edge("Condition/partition column", "#9bb8d4", dotted = TRUE),
+    if (has_filter_edge)
+      legend_edge("Filter column (WHERE)", "#aaaaaa", dotted = TRUE)
   )
 
   rows <- c(

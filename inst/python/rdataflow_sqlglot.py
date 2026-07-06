@@ -47,18 +47,72 @@ def _func_name(fn):
         return type(fn).__name__.upper()
 
 
+def _collect_columns(node, role="value"):
+    """Walk `node` collecting every referenced column with its lineage role.
+
+    `role` is the ambient classification for the subtree being walked:
+    "value" by default, but two constructs narrow it for their children:
+
+    * ``exp.Case`` — columns in a WHEN predicate (the simple-case switch
+      expression and each ``ifs[].this`` comparison) are "condition";
+      columns in a THEN/ELSE result keep the ambient role, since a CASE
+      used e.g. inside a window PARTITION BY should still report its
+      result columns as "partition".
+    * ``exp.Window`` — columns in PARTITION BY / ORDER BY are "partition";
+      columns elsewhere (the windowed function's own arguments) keep the
+      ambient role.
+
+    Everything else recurses through the AST unchanged, so a column buried
+    under arithmetic, casts, nested functions, etc. still gets classified
+    correctly relative to the nearest enclosing CASE/Window.
+    """
+    if node is None:
+        return []
+    if isinstance(node, list):
+        out = []
+        for item in node:
+            out.extend(_collect_columns(item, role))
+        return out
+    if isinstance(node, exp.Column):
+        return [{"table": node.table or None, "name": node.name, "role": role}]
+    if isinstance(node, exp.Case):
+        out = []
+        out.extend(_collect_columns(node.args.get("this"), "condition"))
+        for iff in node.args.get("ifs") or []:
+            out.extend(_collect_columns(iff.args.get("this"), "condition"))
+            out.extend(_collect_columns(iff.args.get("true"), role))
+        out.extend(_collect_columns(node.args.get("default"), role))
+        return out
+    if isinstance(node, exp.Window):
+        out = []
+        handled = ("this", "partition_by", "order")
+        out.extend(_collect_columns(node.args.get("this"), role))
+        out.extend(_collect_columns(node.args.get("partition_by"), "partition"))
+        out.extend(_collect_columns(node.args.get("order"), "partition"))
+        for key, val in node.args.items():
+            if key in handled:
+                continue
+            out.extend(_collect_columns(val, role))
+        return out
+    if isinstance(node, exp.Expression):
+        out = []
+        for val in node.args.values():
+            out.extend(_collect_columns(val, role))
+        return out
+    return []
+
+
 def _describe_projection(proj):
     """Summarise a single SELECT-list expression.
 
     Returns the output name, the raw SQL of the expression, the source
-    columns it references, the function names it contains, and structural
+    columns it references (each tagged with a lineage `role`: "value",
+    "condition" for a CASE WHEN predicate, or "partition" for a window's
+    PARTITION BY / ORDER BY), the function names it contains, and structural
     flags (aggregate / window / case) that the R classifier turns into a
     transformation category.
     """
-    columns = [
-        {"table": c.table or None, "name": c.name}
-        for c in proj.find_all(exp.Column)
-    ]
+    columns = _collect_columns(proj, "value")
     funcs = [_func_name(f) for f in proj.find_all(exp.Func)]
     return {
         "output": proj.alias_or_name,
@@ -171,6 +225,20 @@ def _where_sql(select):
     return where.this.sql(dialect="tsql") if where is not None else None
 
 
+def _where_columns(select):
+    """Columns referenced in the WHERE predicate, for filter-edge lineage.
+
+    Unlike `_describe_projection`'s columns, these carry no `role` — the R
+    side assigns them the fixed role "filter" since a WHERE clause has no
+    CASE/window sub-structure to distinguish.
+    """
+    where = _arg(select, "where")
+    if where is None:
+        return []
+    return [{"table": c.table or None, "name": c.name}
+            for c in where.this.find_all(exp.Column)]
+
+
 def _stage_from_select(select, name, role):
     """Build a stage descriptor from a SELECT node."""
     return {
@@ -181,6 +249,7 @@ def _stage_from_select(select, name, role):
         "joins": _joins(select),
         "group_by": _group_by(select),
         "where": _where_sql(select),
+        "where_columns": _where_columns(select),
     }
 
 

@@ -15,7 +15,9 @@
 #   cte_edges    - CTE stage → downstream stage connections (within a statement)
 #   temp_edges   - temp-table producer stage → consumer stage connections (cross-
 #                  statement; mirrors cte_edges for multi-statement scripts)
-#   col_edges    - column-level lineage: source-table/CTE port → stage output port
+#   col_edges    - column-level lineage: source-table/CTE port → stage output
+#                  port, tagged with a role ("value" / "condition" / "partition"
+#                  / "filter"); filter edges target the stage node (no to_port)
 #
 # Column sub-tibbles
 #   table_nodes$columns : col_name, col_type, used, is_key
@@ -416,14 +418,22 @@ make_temp_edges <- function(ir, stg_nodes) {
 }
 
 # Column-level lineage edges: one row per (source column, output column) pair
-# traced through proj_sources. The source may be a physical table node or an
+# traced through proj_sources, plus one row per WHERE-clause filter column
+# traced through `filters`. The source may be a physical table node or an
 # upstream CTE stage node; both are looked up by the src_table name.
+#
+# Every edge carries a `role`: "value" (default), "condition" (CASE WHEN
+# predicate), "partition" (window PARTITION BY / ORDER BY), or "filter" (WHERE
+# predicate). Filter edges target the stage node itself with `to_port = NA` —
+# a WHERE-clause column narrows the stage's rows, not any one output column.
 make_col_edges <- function(ir, tbl_nodes, stg_nodes) {
-  if (nrow(ir$proj_sources) == 0) {
-    return(tibble::tibble(
-      from_node_id = character(), from_port = character(),
-      to_node_id   = character(), to_port   = character()
-    ))
+  col_edges_proto <- tibble::tibble(
+    from_node_id = character(), from_port = character(),
+    to_node_id   = character(), to_port   = character(),
+    role         = character()
+  )
+  if (nrow(ir$proj_sources) == 0 && nrow(ir$filters) == 0) {
+    return(col_edges_proto)
   }
 
   # CTE stage lookup — scoped to the owning statement so same-named CTEs in
@@ -441,6 +451,16 @@ make_col_edges <- function(ir, tbl_nodes, stg_nodes) {
   stg_node_by_outtbl <- output_node_map(stg_nodes)
   tbl_node_by_name   <- as.list(stats::setNames(tbl_nodes$node_id, tolower(tbl_nodes$table)))
 
+  # Resolve a source table/alias name to its upstream node_id (CTE, temp
+  # producer, or physical table), scoped to the referencing stage's statement.
+  resolve_source_node <- function(src_table, stage_id) {
+    src_lower <- tolower(src_table)
+    src_stmt  <- stmt_of[[as.character(stage_id)]]
+    cte_node_by_key[[cte_scope_key(src_stmt, src_lower)]] %||%
+      stg_node_by_outtbl[[src_lower]] %||%
+      tbl_node_by_name[[src_lower]]
+  }
+
   rows <- list()
   for (i in seq_len(nrow(ir$proj_sources))) {
     row <- ir$proj_sources[i, ]
@@ -449,26 +469,39 @@ make_col_edges <- function(ir, tbl_nodes, stg_nodes) {
     to_node <- stg_node_by_id[[as.character(row$stage_id)]]
     if (is.null(to_node)) next
 
-    src_lower <- tolower(row$src_table)
-    src_stmt  <- stmt_of[[as.character(row$stage_id)]]
-    from_node <- cte_node_by_key[[cte_scope_key(src_stmt, src_lower)]] %||%
-      stg_node_by_outtbl[[src_lower]] %||%
-      tbl_node_by_name[[src_lower]]
+    from_node <- resolve_source_node(row$src_table, row$stage_id)
     if (is.null(from_node)) next
 
     rows[[length(rows) + 1L]] <- tibble::tibble(
       from_node_id = from_node,
       from_port    = row$src_column,
       to_node_id   = to_node,
-      to_port      = row$output
+      to_port      = row$output,
+      role         = if ("role" %in% names(row) && !is.na(row$role)) row$role else "value"
+    )
+  }
+
+  for (i in seq_len(nrow(ir$filters))) {
+    row <- ir$filters[i, ]
+    if (is.na(row$src_table) || is.na(row$src_column)) next
+
+    to_node <- stg_node_by_id[[as.character(row$stage_id)]]
+    if (is.null(to_node)) next
+
+    from_node <- resolve_source_node(row$src_table, row$stage_id)
+    if (is.null(from_node)) next
+
+    rows[[length(rows) + 1L]] <- tibble::tibble(
+      from_node_id = from_node,
+      from_port    = row$src_column,
+      to_node_id   = to_node,
+      to_port      = NA_character_,
+      role         = "filter"
     )
   }
 
   if (length(rows) == 0) {
-    return(tibble::tibble(
-      from_node_id = character(), from_port = character(),
-      to_node_id   = character(), to_port   = character()
-    ))
+    return(col_edges_proto)
   }
   dplyr::distinct(dplyr::bind_rows(rows))
 }

@@ -254,3 +254,51 @@ test_that("rankdir=TB is honoured and save_sqlflow writes DOT files", {
   expect_match(paste(readLines(path), collapse = "\n"), "digraph sqlflow")
   unlink(path)
 })
+
+# --- Batch H regression tests (indirect lineage: condition/partition/filter) -
+
+test_that("condition/partition column edges render dotted with role in the tooltip", {
+  skip_if_not(sqlglot_available(), "sqlglot not available")
+  s <- schema_from_list(list(
+    "dbo.t" = c(status = "INT", amount = "DECIMAL", x = "INT",
+               grp = "INT", d = "DATE")
+  ))
+  sql <- paste(
+    "SELECT CASE WHEN status = 1 THEN amount ELSE 0 END AS adj,",
+    "SUM(x) OVER (PARTITION BY grp ORDER BY d) AS running FROM dbo.t"
+  )
+  ir <- classify_transform(build_ir(parse_sql(sql, schema = s)))
+  dot <- graph_to_dot(build_graph(ir, schema = s))
+
+  expect_match(dot, 'tbl_dbo_t:status -> stg_1_result:adj \\[style=dotted color="#9bb8d4"')
+  expect_match(dot, "tooltip=\"status -> adj \\(condition\\)\"")
+  expect_match(dot, "tooltip=\"grp -> running \\(partition\\)\"")
+  # THEN/ELSE and window-argument columns keep the plain value styling
+  expect_match(dot, 'tbl_dbo_t:amount -> stg_1_result:adj \\[style=dashed color="#4a90d9"')
+})
+
+test_that("filter column edges render dotted grey and target the stage node (no port)", {
+  skip_if_not(sqlglot_available(), "sqlglot not available")
+  s <- schema_from_list(list("dbo.t" = c(a = "INT", b = "INT")))
+  ir <- classify_transform(build_ir(parse_sql("SELECT a FROM dbo.t WHERE b > 5", schema = s)))
+  g <- build_graph(ir, schema = s)
+  dot <- graph_to_dot(g)
+
+  stg_node <- g$stage_nodes[g$stage_nodes$role == "output", ]$node_id
+  expect_match(dot, sprintf('tbl_dbo_t:b -> %s \\[style=dotted color="#aaaaaa"', stg_node))
+  expect_match(dot, 'tooltip="b \\(filter\\)"')
+})
+
+test_that("legend lists condition/partition and filter entries only when present", {
+  skip_if_not(sqlglot_available(), "sqlglot not available")
+  # Plain value-only lineage: no condition/partition/filter legend rows.
+  plain_dot <- graph_to_dot(test_plot_ir())
+  expect_false(grepl("Condition/partition column", plain_dot, fixed = TRUE))
+  expect_false(grepl("Filter column", plain_dot, fixed = TRUE))
+
+  s <- schema_from_list(list("dbo.t" = c(a = "INT", b = "INT")))
+  ir <- classify_transform(build_ir(parse_sql("SELECT a FROM dbo.t WHERE b > 5", schema = s)))
+  filter_dot <- graph_to_dot(build_graph(ir, schema = s))
+  expect_match(filter_dot, "Filter column (WHERE)", fixed = TRUE)
+  expect_false(grepl("Condition/partition column", filter_dot, fixed = TRUE))
+})

@@ -35,6 +35,7 @@ build_ir <- function(parsed) {
   joins <- list()
   join_keys <- list()
   group_by <- list()
+  filters <- list()
 
   # Global stage counter so stage_id is unique across all statements.
   sid <- 0L
@@ -94,9 +95,24 @@ build_ir <- function(parsed) {
             output = scalar_chr(p$output),
             src_alias = src_alias,
             src_table = resolve_alias(src_alias, alias_to_table),
-            src_column = scalar_chr(col$name)
+            src_column = scalar_chr(col$name),
+            role = scalar_role(col$role)
           )
         }
+      }
+
+      # --- WHERE-clause lineage (filter columns) ------------------------------
+      # These columns feed no output column; they narrow the stage's row set.
+      # role is always "filter", assigned here rather than by the parser since
+      # a WHERE predicate has no CASE/window sub-structure to distinguish.
+      for (col in stg$where_columns) {
+        src_alias <- scalar_chr(col$table)
+        filters[[length(filters) + 1L]] <- tibble::tibble(
+          stage_id = sid,
+          src_alias = src_alias,
+          src_table = resolve_alias(src_alias, alias_to_table),
+          src_column = scalar_chr(col$name)
+        )
       }
 
       # --- joins + join keys -------------------------------------------------
@@ -138,7 +154,8 @@ build_ir <- function(parsed) {
       sources = bind_or_empty(sources, ir_proto$sources),
       joins = bind_or_empty(joins, ir_proto$joins),
       join_keys = bind_or_empty(join_keys, ir_proto$join_keys),
-      group_by = bind_or_empty(group_by, ir_proto$group_by)
+      group_by = bind_or_empty(group_by, ir_proto$group_by),
+      filters = bind_or_empty(filters, ir_proto$filters)
     ),
     class = "rdataflow_ir"
   )
@@ -169,6 +186,14 @@ scalar_chr <- function(x) {
   as.character(x)[[1]]
 }
 
+# Like scalar_chr(), but defaults to "value" rather than NA when the parser
+# didn't report a role — keeps proj_sources usable if the Python module is
+# ever an older version that predates role classification.
+scalar_role <- function(x) {
+  if (is.null(x) || length(x) == 0) return("value")
+  as.character(x)[[1]]
+}
+
 # Bind a list of single-row tibbles, or return a typed 0-row prototype when
 # the list is empty so the IR always has the expected columns/types.
 bind_or_empty <- function(rows, proto) {
@@ -190,7 +215,7 @@ ir_proto <- list(
   ),
   proj_sources = tibble::tibble(
     stage_id = integer(), output = character(), src_alias = character(),
-    src_table = character(), src_column = character()
+    src_table = character(), src_column = character(), role = character()
   ),
   sources = tibble::tibble(
     stage_id = integer(), alias = character(), catalog = character(),
@@ -204,7 +229,11 @@ ir_proto <- list(
     stage_id = integer(), join_index = integer(), left = character(),
     right = character()
   ),
-  group_by = tibble::tibble(stage_id = integer(), expr = character())
+  group_by = tibble::tibble(stage_id = integer(), expr = character()),
+  filters = tibble::tibble(
+    stage_id = integer(), src_alias = character(), src_table = character(),
+    src_column = character()
+  )
 )
 
 #' @export
