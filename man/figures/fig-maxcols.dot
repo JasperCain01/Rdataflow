@@ -1,0 +1,22 @@
+digraph sqlflow {
+  graph [rankdir=LR bgcolor="#fafafa" fontname="Helvetica" pad="0.4"
+         nodesep="0.4" ranksep="0.9" splines=polyline newrank=true]
+  node  [shape=none margin="0" fontname="Helvetica"]
+  edge  [fontname="Helvetica" fontsize="9" color="#888888"]
+
+  tbl_dbo_customers [label=<<TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="3"><TR><TD COLSPAN="2" BGCOLOR="#34495e" ALIGN="LEFT"><FONT COLOR="white"><B>dbo.customers</B></FONT></TD></TR><TR><TD PORT="customer_id" BGCOLOR="#d4edff" ALIGN="LEFT">customer_id</TD><TD BGCOLOR="#d4edff" ALIGN="LEFT"><FONT COLOR="#999999">INT</FONT></TD></TR><TR><TD PORT="name" BGCOLOR="#d4edff" ALIGN="LEFT">name</TD><TD BGCOLOR="#d4edff" ALIGN="LEFT"><FONT COLOR="#999999">VARCHAR</FONT></TD></TR><TR><TD PORT="region_id" BGCOLOR="#d4edff" ALIGN="LEFT">region_id</TD><TD BGCOLOR="#d4edff" ALIGN="LEFT"><FONT COLOR="#999999">INT</FONT></TD></TR><TR><TD PORT="email" BGCOLOR="#f9f9f9" ALIGN="LEFT">email</TD><TD BGCOLOR="#f9f9f9" ALIGN="LEFT"><FONT COLOR="#999999">VARCHAR</FONT></TD></TR><TR><TD PORT="phone" BGCOLOR="#f9f9f9" ALIGN="LEFT">phone</TD><TD BGCOLOR="#f9f9f9" ALIGN="LEFT"><FONT COLOR="#999999">VARCHAR</FONT></TD></TR><TR><TD PORT="address1" BGCOLOR="#f9f9f9" ALIGN="LEFT">address1</TD><TD BGCOLOR="#f9f9f9" ALIGN="LEFT"><FONT COLOR="#999999">VARCHAR</FONT></TD></TR><TR><TD COLSPAN="2" BGCOLOR="#f9f9f9" ALIGN="LEFT"><FONT COLOR="#888888" POINT-SIZE="9"><I>&#8230; 9 more columns</I></FONT></TD></TR></TABLE>>]
+
+  stg_1_result [label=<<TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="3"><TR><TD COLSPAN="2" BGCOLOR="#1a4f7a" ALIGN="LEFT"><FONT COLOR="white"><B>result</B> <FONT POINT-SIZE="9">(output)</FONT></FONT></TD></TR><TR><TD PORT="customer_id" BGCOLOR="#ffffff" ALIGN="LEFT">customer_id</TD><TD BGCOLOR="#ffffff" ALIGN="LEFT"></TD></TR><TR><TD PORT="name" BGCOLOR="#ffffff" ALIGN="LEFT">name</TD><TD BGCOLOR="#ffffff" ALIGN="LEFT"></TD></TR><TR><TD PORT="region_id" BGCOLOR="#ffffff" ALIGN="LEFT">region_id</TD><TD BGCOLOR="#ffffff" ALIGN="LEFT"></TD></TR></TABLE>>]
+
+  {rank=same; stg_1_result}
+
+  tbl_dbo_customers -> stg_1_result [color="#cccccc" arrowsize=0.6 tooltip="FROM"]
+  tbl_dbo_customers:customer_id -> stg_1_result:customer_id [style=dashed color="#4a90d9" arrowsize=0.7 tooltip="customer_id -> customer_id"]
+  tbl_dbo_customers:name -> stg_1_result:name [style=dashed color="#4a90d9" arrowsize=0.7 tooltip="name -> name"]
+  tbl_dbo_customers:region_id -> stg_1_result:region_id [style=dashed color="#4a90d9" arrowsize=0.7 tooltip="region_id -> region_id"]
+
+  subgraph cluster_legend {
+    graph [style=rounded color="#cccccc" bgcolor="#ffffff" label="" margin="8"]
+    legend_node [label=<<TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="3"><TR><TD BGCOLOR="#555555" ALIGN="LEFT"><FONT COLOR="white" POINT-SIZE="10"><B>Legend</B></FONT></TD></TR><TR><TD BGCOLOR="#e0e0e0" ALIGN="LEFT"><FONT POINT-SIZE="9"><B>Node headers</B></FONT></TD></TR><TR><TD BGCOLOR="#34495e" ALIGN="LEFT"><FONT POINT-SIZE="9" COLOR="white">Physical table</FONT></TD></TR><TR><TD BGCOLOR="#1a4f7a" ALIGN="LEFT"><FONT POINT-SIZE="9" COLOR="white">Output stage</FONT></TD></TR><TR><TD BGCOLOR="#e0e0e0" ALIGN="LEFT"><FONT POINT-SIZE="9"><B>Column role (table nodes)</B></FONT></TD></TR><TR><TD BGCOLOR="#d4edff" ALIGN="LEFT"><FONT POINT-SIZE="9" COLOR="#222222">Projected</FONT></TD></TR><TR><TD BGCOLOR="#f9f9f9" ALIGN="LEFT"><FONT POINT-SIZE="9" COLOR="#222222">Unused</FONT></TD></TR><TR><TD BGCOLOR="#e0e0e0" ALIGN="LEFT"><FONT POINT-SIZE="9"><B>Transformation (stage nodes)</B></FONT></TD></TR><TR><TD BGCOLOR="#ffffff" ALIGN="LEFT"><FONT POINT-SIZE="9" COLOR="#222222">passthrough</FONT></TD></TR><TR><TD BGCOLOR="#e0e0e0" ALIGN="LEFT"><FONT POINT-SIZE="9"><B>Edges</B></FONT></TD></TR><TR><TD ALIGN="LEFT"><FONT POINT-SIZE="9" COLOR="#888888">---  Source / FROM</FONT></TD></TR><TR><TD ALIGN="LEFT"><FONT POINT-SIZE="9" COLOR="#4a90d9">- -  Column lineage</FONT></TD></TR></TABLE>> shape=none margin="0"]
+  }
+}

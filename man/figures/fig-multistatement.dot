@@ -1,0 +1,35 @@
+digraph sqlflow {
+  graph [rankdir=LR bgcolor="#fafafa" fontname="Helvetica" pad="0.4"
+         nodesep="0.4" ranksep="0.9" splines=polyline newrank=true]
+  node  [shape=none margin="0" fontname="Helvetica"]
+  edge  [fontname="Helvetica" fontsize="9" color="#888888"]
+
+  tbl_dbo_orders [label=<<TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="3"><TR><TD COLSPAN="2" BGCOLOR="#34495e" ALIGN="LEFT"><FONT COLOR="white"><B>dbo.orders</B></FONT></TD></TR><TR><TD PORT="order_id" BGCOLOR="#f9f9f9" ALIGN="LEFT">order_id</TD><TD BGCOLOR="#f9f9f9" ALIGN="LEFT"><FONT COLOR="#999999">INT</FONT></TD></TR><TR><TD PORT="customer_id" BGCOLOR="#d4edff" ALIGN="LEFT">customer_id</TD><TD BGCOLOR="#d4edff" ALIGN="LEFT"><FONT COLOR="#999999">INT</FONT></TD></TR><TR><TD PORT="amount" BGCOLOR="#d4edff" ALIGN="LEFT">amount</TD><TD BGCOLOR="#d4edff" ALIGN="LEFT"><FONT COLOR="#999999">DECIMAL</FONT></TD></TR></TABLE>>]
+  tbl_dbo_customers [label=<<TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="3"><TR><TD COLSPAN="2" BGCOLOR="#34495e" ALIGN="LEFT"><FONT COLOR="white"><B>dbo.customers</B></FONT></TD></TR><TR><TD PORT="customer_id" BGCOLOR="#a9c9ee" ALIGN="LEFT"><B>customer_id</B></TD><TD BGCOLOR="#a9c9ee" ALIGN="LEFT"><FONT COLOR="#999999">INT</FONT></TD></TR><TR><TD PORT="name" BGCOLOR="#d4edff" ALIGN="LEFT">name</TD><TD BGCOLOR="#d4edff" ALIGN="LEFT"><FONT COLOR="#999999">VARCHAR</FONT></TD></TR><TR><TD PORT="region_id" BGCOLOR="#f9f9f9" ALIGN="LEFT">region_id</TD><TD BGCOLOR="#f9f9f9" ALIGN="LEFT"><FONT COLOR="#999999">INT</FONT></TD></TR></TABLE>>]
+
+  subgraph cluster_stmt_1 {
+    graph [label="Statement 1 -> #totals" fontsize="10" fontcolor="#666666" color="#cccccc" style=rounded labeljust=l margin="10"]
+    stg_1___totals_ [label=<<TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="3"><TR><TD COLSPAN="2" BGCOLOR="#1a4f7a" ALIGN="LEFT"><FONT COLOR="white"><B>[#totals]</B> <FONT POINT-SIZE="9">(output)</FONT></FONT></TD></TR><TR><TD PORT="customer_id" BGCOLOR="#ffffff" ALIGN="LEFT">customer_id</TD><TD BGCOLOR="#ffffff" ALIGN="LEFT"></TD></TR><TR><TD PORT="total" BGCOLOR="#fff3cd" ALIGN="LEFT" HREF="#" TOOLTIP="SUM([o].[amount]) AS [total]">total</TD><TD BGCOLOR="#fff3cd" ALIGN="LEFT"><FONT COLOR="#777777">aggregate</FONT></TD></TR><TR><TD COLSPAN="2" BGCOLOR="#f0f0f0" ALIGN="LEFT"><FONT COLOR="#555555" POINT-SIZE="9"><I>GROUP BY customer_id; SUM</I></FONT></TD></TR></TABLE>>]
+  }
+  subgraph cluster_stmt_2 {
+    graph [label="Statement 2 -> #summary" fontsize="10" fontcolor="#666666" color="#cccccc" style=rounded labeljust=l margin="10"]
+    stg_2___summary_ [label=<<TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="3"><TR><TD COLSPAN="2" BGCOLOR="#1a4f7a" ALIGN="LEFT"><FONT COLOR="white"><B>[#summary]</B> <FONT POINT-SIZE="9">(output)</FONT></FONT></TD></TR><TR><TD PORT="customer_id" BGCOLOR="#ffffff" ALIGN="LEFT">customer_id</TD><TD BGCOLOR="#ffffff" ALIGN="LEFT"></TD></TR><TR><TD PORT="name" BGCOLOR="#ffffff" ALIGN="LEFT">name</TD><TD BGCOLOR="#ffffff" ALIGN="LEFT"></TD></TR><TR><TD PORT="total" BGCOLOR="#ffffff" ALIGN="LEFT">total</TD><TD BGCOLOR="#ffffff" ALIGN="LEFT"></TD></TR></TABLE>>]
+  }
+
+  {rank=same; stg_1___totals_}
+  {rank=same; stg_2___summary_}
+
+  tbl_dbo_orders -> stg_1___totals_ [color="#cccccc" arrowsize=0.6 tooltip="FROM"]
+  tbl_dbo_customers -> stg_2___summary_ [color="#cccccc" arrowsize=0.6 tooltip="FROM"]
+  stg_1___totals_ -> stg_2___summary_ [style=dashed color="#4477AA" label="#temp" fontcolor="#4477AA"]
+  tbl_dbo_orders:customer_id -> stg_1___totals_:customer_id [style=dashed color="#4a90d9" arrowsize=0.7 tooltip="customer_id -> customer_id"]
+  tbl_dbo_orders:amount -> stg_1___totals_:total [style=dashed color="#4a90d9" arrowsize=0.7 tooltip="amount -> total"]
+  tbl_dbo_customers:customer_id -> stg_2___summary_:customer_id [style=dashed color="#4a90d9" arrowsize=0.7 tooltip="customer_id -> customer_id"]
+  tbl_dbo_customers:name -> stg_2___summary_:name [style=dashed color="#4a90d9" arrowsize=0.7 tooltip="name -> name"]
+  stg_1___totals_:total -> stg_2___summary_:total [style=dashed color="#4a90d9" arrowsize=0.7 tooltip="total -> total"]
+
+  subgraph cluster_legend {
+    graph [style=rounded color="#cccccc" bgcolor="#ffffff" label="" margin="8"]
+    legend_node [label=<<TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="3"><TR><TD BGCOLOR="#555555" ALIGN="LEFT"><FONT COLOR="white" POINT-SIZE="10"><B>Legend</B></FONT></TD></TR><TR><TD BGCOLOR="#e0e0e0" ALIGN="LEFT"><FONT POINT-SIZE="9"><B>Node headers</B></FONT></TD></TR><TR><TD BGCOLOR="#34495e" ALIGN="LEFT"><FONT POINT-SIZE="9" COLOR="white">Physical table</FONT></TD></TR><TR><TD BGCOLOR="#1a4f7a" ALIGN="LEFT"><FONT POINT-SIZE="9" COLOR="white">Output stage</FONT></TD></TR><TR><TD BGCOLOR="#e0e0e0" ALIGN="LEFT"><FONT POINT-SIZE="9"><B>Column role (table nodes)</B></FONT></TD></TR><TR><TD BGCOLOR="#d4edff" ALIGN="LEFT"><FONT POINT-SIZE="9" COLOR="#222222">Projected</FONT></TD></TR><TR><TD BGCOLOR="#a9c9ee" ALIGN="LEFT"><FONT POINT-SIZE="9" COLOR="#222222">Projected + key</FONT></TD></TR><TR><TD BGCOLOR="#f9f9f9" ALIGN="LEFT"><FONT POINT-SIZE="9" COLOR="#222222">Unused</FONT></TD></TR><TR><TD BGCOLOR="#e0e0e0" ALIGN="LEFT"><FONT POINT-SIZE="9"><B>Transformation (stage nodes)</B></FONT></TD></TR><TR><TD BGCOLOR="#fff3cd" ALIGN="LEFT"><FONT POINT-SIZE="9" COLOR="#222222">aggregate</FONT></TD></TR><TR><TD BGCOLOR="#ffffff" ALIGN="LEFT"><FONT POINT-SIZE="9" COLOR="#222222">passthrough</FONT></TD></TR><TR><TD BGCOLOR="#e0e0e0" ALIGN="LEFT"><FONT POINT-SIZE="9"><B>Edges</B></FONT></TD></TR><TR><TD ALIGN="LEFT"><FONT POINT-SIZE="9" COLOR="#888888">---  Source / FROM</FONT></TD></TR><TR><TD ALIGN="LEFT"><FONT POINT-SIZE="9" COLOR="#4477AA">- -  #temp feed</FONT></TD></TR><TR><TD ALIGN="LEFT"><FONT POINT-SIZE="9" COLOR="#4a90d9">- -  Column lineage</FONT></TD></TR></TABLE>> shape=none margin="0"]
+  }
+}

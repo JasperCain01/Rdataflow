@@ -1,5 +1,7 @@
 # Rdataflow
 
+![Column-level lineage example](man/figures/fig-quickstart.svg)
+
 **Rdataflow** visualises the column-level data flow of a SQL script. Given a
 SQL script and optional database metadata, it parses the query, traces each
 column from its source table through every CTE and join to the final output,
