@@ -142,3 +142,21 @@ test_that("DECLARE with AS keyword and precision commas still parses", {
   expect_equal(out$type, "DECIMAL")
   expect_equal(out$value_expr, "1.5")
 })
+
+test_that("DECLARE / SET behind a leading comment still registers", {
+  # The splitter attaches header comments to the statement chunk; the
+  # classifier strips them to decide `kind`, so extraction must too.
+  out <- extract_declare(
+    "/* setup /* nested */ vars */\nDECLARE @a INT = 5, @b DATE = '2024-01-01'"
+  )
+  expect_equal(out$name, c("@a", "@b"))
+  expect_equal(out$value_expr, c("5", "'2024-01-01'"))
+
+  out2 <- extract_declare("-- bump counter\nSET @a = 7")
+  expect_equal(out2$name, "@a")
+  expect_equal(out2$value_expr, "7")
+
+  # Comment markers inside a string value must survive untouched.
+  out3 <- extract_declare("DECLARE @s VARCHAR(20) = 'a--b/*c*/'")
+  expect_equal(out3$value_expr, "'a--b/*c*/'")
+})

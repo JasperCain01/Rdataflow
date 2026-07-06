@@ -172,3 +172,26 @@ test_that("explain_sqlflow narrates DISTINCT, TOP, and HAVING", {
   expect_match(txt, "keeps top 100", fixed = TRUE)
   expect_match(txt, "filters groups: HAVING SUM", fixed = TRUE)
 })
+
+test_that("explain_sqlflow narrates CROSS APPLY as 'cross applies'", {
+  skip_if_not(sqlglot_available(), "sqlglot not available")
+  s <- schema_from_list(list(
+    "dbo.a" = c(id = "INT", v = "INT"),
+    "dbo.b" = c(id = "INT", w = "INT")
+  ))
+  sql <- "
+    SELECT a.id, top_b.w
+    FROM dbo.a a
+    CROSS APPLY (SELECT TOP 1 b.w FROM dbo.b b WHERE b.id = a.id) top_b
+  "
+  txt <- paste(explain_sqlflow(sql, schema = s), collapse = "\n")
+  expect_match(txt, "applies top_b")
+  expect_no_match(txt, "applys")
+})
+
+test_that("explain_sqlflow surfaces the skip log like sql_dataflow", {
+  skip_if_not(sqlglot_available(), "sqlglot not available")
+  s <- schema_from_list(list("dbo.t" = c(a = "INT")))
+  sql <- "EXEC sp_executesql @q;\nSELECT a INTO #x FROM dbo.t;"
+  expect_warning(explain_sqlflow(sql, schema = s), "unrecognised statement")
+})

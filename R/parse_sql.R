@@ -245,9 +245,22 @@ parse_sql <- function(sql, schema = NULL, dialect = "tsql") {
       # sqlglot may return multiple statements for one input (rare); take all.
       for (st in parsed$statements) {
         # Override kind and output_table with our R-level classification,
-        # which is more reliable for procedural scripts.
+        # which is more reliable for procedural scripts. UPDATE is the
+        # exception: the R text-level match captures whatever identifier
+        # follows UPDATE, which for `UPDATE t ... FROM dbo.target t` is the
+        # bare FROM alias — the Python layer resolves that to the real
+        # table (_update_target_name), so its value wins when present.
         st$kind         <- kind
-        st$output_table <- output_tbl %||% st$output_table
+        st$output_table <- if (identical(kind, "update")) {
+          # Python renders the resolved table with tsql bracket quoting
+          # ("[dbo].[target]"); strip to the plain dotted form used by the
+          # R-level matchers and the graph builder.
+          py_tbl <- st$output_table
+          if (!is.null(py_tbl)) py_tbl <- gsub("\\[([^]]*)\\]", "\\1", py_tbl)
+          py_tbl %||% output_tbl
+        } else {
+          output_tbl %||% st$output_table
+        }
         statements_out[[length(Filter(Negate(is.null), statements_out)) + 1L]] <- st
       }
 
@@ -299,6 +312,12 @@ match_ident_after <- function(text, prefix_re) {
 # Extract the output table name from a statement, given its classified kind.
 # Returns NULL when the statement has no output table.
 extract_output_table <- function(text, kind) {
+  # Statement chunks keep their comments, so anchored prefixes like
+  # ^INSERT\s+INTO or ^CREATE\s+TABLE would miss when a header comment
+  # precedes the keyword (the classifier already strips comments to decide
+  # `kind`, so the two must see the same text). Also stops \bINTO from
+  # matching inside a comment.
+  text <- trimws(strip_comments(text))
   if (kind == "select_into") {
     # SELECT ... INTO #name / [dbo].[name] ...
     tbl <- match_ident_after(text, "\\bINTO")
@@ -319,13 +338,11 @@ extract_output_table <- function(text, kind) {
   if (kind == "update") {
     # UPDATE <target> SET ... — a text-level match, so it captures whatever
     # identifier immediately follows UPDATE. That's the physical table for
-    # `UPDATE dbo.target SET ...` (with or without a FROM clause), but for
-    # `UPDATE t SET ... FROM dbo.target t JOIN ...` (the FROM alias reused
-    # right after UPDATE) it captures the bare alias "t", not "dbo.target".
-    # The Python layer resolves that case correctly via _update_target_name();
-    # this R-level value only wins when non-NULL (see parse_sql()'s `%||%`),
-    # so prefer repeating the full table name after UPDATE in scripts that
-    # also alias it in FROM.
+    # `UPDATE dbo.target SET ...`, but for `UPDATE t SET ... FROM
+    # dbo.target t JOIN ...` it captures the bare alias "t". The Python
+    # layer resolves the alias to the real table (_update_target_name), so
+    # parse_sql() prefers the Python value for UPDATE and uses this one
+    # only as a fallback when Python returned nothing.
     return(match_ident_after(text, "^UPDATE"))
   }
   NULL

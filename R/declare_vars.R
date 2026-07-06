@@ -154,7 +154,11 @@ extract_declare <- function(text) {
     is_literal = logical()
   )
 
-  t <- trimws(text)
+  # The statement splitter preserves comments, so a header comment attached
+  # to the chunk ("/* setup */ DECLARE @a INT = 5") would defeat the
+  # ^DECLARE / ^SET anchors below. Strip comments the same way the
+  # classifier does before matching (string literals are preserved).
+  t <- trimws(strip_comments(text))
 
   # --- DECLARE @a TYPE [= expr] [, @b TYPE [= expr], ...] ---
   # T-SQL allows several variables in one DECLARE; split on top-level commas

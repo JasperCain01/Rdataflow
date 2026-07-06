@@ -234,3 +234,62 @@ test_that("MERGE INSERT without an explicit column list falls back to source col
                  function(p) p$output, character(1))
   expect_setequal(outs, c("id", "amount", "name"))
 })
+
+test_that("extract_output_table sees through leading comments", {
+  expect_equal(
+    extract_output_table("/* make temp */\nCREATE TABLE #t (a INT)", "create_table"),
+    "#t"
+  )
+  expect_equal(
+    extract_output_table("-- append\nINSERT INTO dbo.x (a) SELECT a FROM t",
+                         "insert_select"),
+    "dbo.x"
+  )
+  expect_equal(
+    extract_output_table("/*x*/ MERGE INTO dbo.t USING s ON 1=1;", "merge"),
+    "dbo.t"
+  )
+  expect_equal(
+    extract_output_table("-- upd\nUPDATE dbo.t SET a = 1", "update"),
+    "dbo.t"
+  )
+  # INTO inside a comment must not be mistaken for SELECT ... INTO.
+  expect_null(
+    extract_output_table("-- goes into the log\nSELECT a FROM t", "select_into")
+  )
+})
+
+test_that("variables declared under a header comment substitute downstream", {
+  skip_if_not(sqlglot_available(), "sqlglot not available")
+  sql <- paste(
+    "/* nightly job */",
+    "DECLARE @cut DATE = '2025-06-30';",
+    "SELECT o.id INTO #x FROM dbo.orders o WHERE o.sold_on <= @cut;",
+    sep = "\n"
+  )
+  s <- schema_from_list(list("dbo.orders" = c(id = "INT", sold_on = "DATE")))
+  parsed <- parse_sql(sql, schema = s)
+  expect_false(any(grepl("unresolved variable", parsed$skipped)))
+  st <- parsed$statements[[1]]
+  expect_match(st$stages[[1]]$where, "2025-06-30", fixed = TRUE)
+})
+
+test_that("UPDATE via a FROM alias resolves to the underlying table", {
+  skip_if_not(sqlglot_available(), "sqlglot not available")
+  s <- schema_from_list(list(
+    "dbo.orders" = c(order_id = "INT", cust_id = "INT", status = "VARCHAR"),
+    "dbo.cust"   = c(cust_id = "INT", tier = "VARCHAR")
+  ))
+  sql <- "
+    UPDATE o
+    SET o.status = 'big'
+    FROM dbo.orders o
+    JOIN dbo.cust c ON c.cust_id = o.cust_id
+    WHERE c.tier = 'gold'
+  "
+  parsed <- parse_sql(sql, schema = s)
+  st <- parsed$statements[[1]]
+  expect_equal(st$kind, "update")
+  expect_match(st$output_table, "orders")
+  expect_match(st$stages[[1]]$name, "orders")
+})

@@ -340,14 +340,20 @@ make_source_edges <- function(ir, tbl_nodes, stg_nodes) {
 # that CTE's stage node to the consuming stage node. Scoping by statement
 # keeps same-named CTEs in different statements from cross-wiring.
 make_cte_edges <- function(ir, stg_nodes) {
+  empty <- tibble::tibble(from_node_id = character(), to_node_id = character(),
+                          from_role = character())
   cte_stages <- stg_nodes[stg_nodes$role %in% c("cte", "subquery") &
                           !is.na(stg_nodes$name), ]
   if (nrow(cte_stages) == 0) {
-    return(tibble::tibble(from_node_id = character(), to_node_id = character()))
+    return(empty)
   }
 
   cte_node_by_key <- as.list(stats::setNames(
     cte_stages$node_id,
+    cte_scope_key(cte_stages$statement_index, cte_stages$name)
+  ))
+  cte_role_by_key <- as.list(stats::setNames(
+    cte_stages$role,
     cte_scope_key(cte_stages$statement_index, cte_stages$name)
   ))
   stg_node_by_id <- as.list(stats::setNames(stg_nodes$node_id, as.character(stg_nodes$stage_id)))
@@ -358,7 +364,8 @@ make_cte_edges <- function(ir, stg_nodes) {
     src <- ir$sources[i, ]
     if (is.na(src$table)) next
     src_stmt <- stmt_of[[as.character(src$stage_id)]]
-    from_node <- cte_node_by_key[[cte_scope_key(src_stmt, src$table)]]
+    key <- cte_scope_key(src_stmt, src$table)
+    from_node <- cte_node_by_key[[key]]
     if (is.null(from_node)) next
 
     to_node <- stg_node_by_id[[as.character(src$stage_id)]]
@@ -366,12 +373,13 @@ make_cte_edges <- function(ir, stg_nodes) {
 
     rows[[length(rows) + 1L]] <- tibble::tibble(
       from_node_id = from_node,
-      to_node_id   = to_node
+      to_node_id   = to_node,
+      from_role    = cte_role_by_key[[key]]
     )
   }
 
   if (length(rows) == 0) {
-    return(tibble::tibble(from_node_id = character(), to_node_id = character()))
+    return(empty)
   }
   dplyr::distinct(dplyr::bind_rows(rows))
 }

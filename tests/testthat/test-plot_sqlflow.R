@@ -353,3 +353,23 @@ test_that("long HAVING predicates truncate in the footer with the full text on h
   expect_match(dot, "HAVING .*amount.* &gt; 1.*\\.\\.\\.")
   expect_match(dot, "TOOLTIP=\"HAVING .*amount.* &gt; 1")
 })
+
+test_that("derived-table edges are labelled 'subquery', CTE edges 'CTE'", {
+  skip_if_not(sqlglot_available(), "sqlglot not available")
+  s <- schema_from_list(list(
+    "dbo.a" = c(id = "INT", v = "INT"),
+    "dbo.b" = c(id = "INT", w = "INT")
+  ))
+  sql <- "
+    WITH base AS (SELECT id, v FROM dbo.a)
+    SELECT base.id, sub.mw
+    FROM base
+    JOIN (SELECT id, MAX(w) AS mw FROM dbo.b GROUP BY id) sub
+      ON sub.id = base.id
+  "
+  g <- build_graph(classify_transform(build_ir(parse_sql(sql, schema = s))),
+                   schema = s)
+  dot <- graph_to_dot(g)
+  expect_match(dot, 'label="subquery"', fixed = TRUE)
+  expect_match(dot, 'label="CTE"', fixed = TRUE)
+})

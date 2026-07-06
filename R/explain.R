@@ -41,7 +41,11 @@ explain_sqlflow <- function(x, schema = NULL, dialect = "tsql",
     x
   } else if (is.character(x)) {
     sql <- paste(x, collapse = "\n")
-    build_ir(parse_sql(sql, schema = schema, dialect = dialect))
+    parsed <- parse_sql(sql, schema = schema, dialect = dialect)
+    # Same no-silent-gaps contract as sql_dataflow(): a narrative missing a
+    # statement must say so, not just omit it.
+    notify_skipped(parsed$skipped)
+    build_ir(parsed)
   } else {
     rlang::abort("`x` must be a SQL string or an rdataflow_ir object.")
   }
@@ -125,8 +129,9 @@ explain_stage <- function(ir, stg, md = FALSE) {
         } else {
           ""
         }
+        verb <- sub("applys$", "applies", paste0(tolower(jlabel), "s"))
         lines <- c(lines, paste0(
-          b2, tolower(jlabel), "s ", source_label(src), keys_txt
+          b2, verb, " ", source_label(src), keys_txt
         ))
       }
     }

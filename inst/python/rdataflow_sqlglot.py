@@ -366,7 +366,9 @@ def _update_target_name(stmt):
     if not isinstance(target, exp.Table):
         return None
     frm = _arg(stmt, "from", "from_")
-    if frm is not None and target.db is None:
+    # NB: Table.db is "" (empty string), not None, when the target is
+    # unqualified — test truthiness, not identity.
+    if frm is not None and not target.db:
         primary = frm.this
         candidates = [primary] + [j.this for j in (primary.args.get("joins") or [])]
         for rel in candidates:

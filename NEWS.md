@@ -76,6 +76,8 @@
   `WHEN MATCHED`/`WHEN NOT MATCHED` column mapping become projections
   (combined into one stage, since which `WHEN` branch fires per row is not
   modelled — the same simplification already applied to `IF`/`WHILE`).
+  An alias right after `UPDATE` (`UPDATE t SET ... FROM dbo.target t`) is
+  resolved to the underlying `FROM`-clause table.
 
 * `HAVING`, `DISTINCT`, and `TOP` (including `TOP n PERCENT`) are now
   captured per stage: the diagram gains a combined footer row below the
@@ -84,6 +86,17 @@
   ("keeps distinct rows", "keeps top 100", "filters groups: HAVING ...").
 
 ### Bug fixes
+
+* Statements preceded by a comment are handled by the native extractors:
+  a header comment attached to a `DECLARE`/`SET` no longer prevents
+  variable registration (previously every downstream `@var` went
+  unresolved), and `CREATE TABLE`/`INSERT INTO`/`MERGE INTO`/`UPDATE`
+  output-table extraction sees through leading comments (a comment
+  containing parentheses no longer confuses `CREATE TABLE` column parsing).
+
+* Derived-table and `APPLY` stage edges are labelled `subquery` in the
+  diagram instead of incorrectly reading `CTE`; `explain_sqlflow()` says
+  "cross applies X" instead of "cross applys X".
 
 * `GO` is only treated as a batch terminator when it is the first token on
   its line, matching SQL Server's rule — `SELECT 1 AS go` no longer splits.

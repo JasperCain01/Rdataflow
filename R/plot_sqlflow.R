@@ -576,9 +576,13 @@ build_cte_edge_stmts <- function(cte_edges) {
   if (nrow(cte_edges) == 0) return(character(0))
   purrr::map_chr(seq_len(nrow(cte_edges)), function(i) {
     row <- cte_edges[i, ]
+    # Derived-table / APPLY stages share the CTE edge style but should not
+    # be labelled "CTE" — name the actual relationship.
+    label <- if ("from_role" %in% names(cte_edges) &&
+                 identical(row$from_role, "subquery")) "subquery" else "CTE"
     sprintf(
-      '  %s -> %s [style=dashed color="#666666" label="CTE" fontcolor="#666666"]',
-      row$from_node_id, row$to_node_id
+      '  %s -> %s [style=dashed color="#666666" label="%s" fontcolor="#666666"]',
+      row$from_node_id, row$to_node_id, label
     )
   })
 }
