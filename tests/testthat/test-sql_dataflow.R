@@ -103,7 +103,9 @@ test_that("notify_skipped warns about real losses and messages benign skips", {
 
 test_that("parse_sql logs unrecognised statements distinctly", {
   skip_if_not(sqlglot_available(), "sqlglot not available")
-  res <- parse_sql("MERGE INTO t USING s ON t.id = s.id WHEN MATCHED THEN UPDATE SET t.v = s.v;")
+  # MERGE is traced (see test-parse_sql.R); dynamic SQL execution is not and
+  # remains a genuine "unrecognised statement" case.
+  res <- parse_sql("EXEC sp_executesql @sql")
   expect_true(any(grepl("unrecognised statement", res$skipped)))
 })
 

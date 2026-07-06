@@ -70,6 +70,13 @@
   feeding one output column). Previously a column used only in a `WHERE`
   predicate contributed no edge at all.
 
+* `MERGE` and `UPDATE ... FROM ... JOIN` are now traced instead of being
+  skipped with a warning. The target table becomes an output stage fed by
+  the `USING`/`FROM`/`JOIN` sources; `SET` assignments and each
+  `WHEN MATCHED`/`WHEN NOT MATCHED` column mapping become projections
+  (combined into one stage, since which `WHEN` branch fires per row is not
+  modelled — the same simplification already applied to `IF`/`WHILE`).
+
 ### Bug fixes
 
 * `GO` is only treated as a batch terminator when it is the first token on

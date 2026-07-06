@@ -347,3 +347,75 @@ test_that("build_graph col_edges include a filter edge with no to_port for WHERE
   stg_node <- g$stage_nodes[g$stage_nodes$role == "output", ]
   expect_equal(filt$to_node_id, stg_node$node_id)
 })
+
+# --- Batch I regression tests (MERGE / UPDATE support) ----------------------
+
+merge_update_graph_schema <- function() {
+  schema_from_list(list(
+    "dbo.target" = c(id = "INT", amount = "DECIMAL", name = "VARCHAR"),
+    "dbo.source" = c(id = "INT", amount = "DECIMAL", name = "VARCHAR")
+  ))
+}
+
+test_that("UPDATE ... FROM ... JOIN: target becomes the output stage, source is a table node", {
+  skip_if_not(sqlglot_available(), "sqlglot not available")
+  sql <- paste(
+    "UPDATE dbo.target",
+    "SET amount = s.amount, name = s.name",
+    "FROM dbo.target t JOIN dbo.source s ON s.id = t.id"
+  )
+  s <- merge_update_graph_schema()
+  ir <- classify_transform(build_ir(parse_sql(sql, schema = s)))
+  g <- build_graph(ir, schema = s)
+
+  # target is produced (updated) in place, not a source table node
+  expect_false("target" %in% tolower(g$table_nodes$table))
+  expect_true("source" %in% tolower(g$table_nodes$table))
+
+  out_stage <- g$stage_nodes[g$stage_nodes$role == "output", ]
+  expect_equal(nrow(out_stage), 1L)
+  expect_equal(out_stage$output_table, "dbo.target")
+
+  src_node <- g$table_nodes[g$table_nodes$table == "source", ]
+  expect_true(any(g$col_edges$from_node_id == src_node$node_id &
+                    g$col_edges$to_node_id == out_stage$node_id))
+})
+
+test_that("MERGE: target becomes the output stage, USING source is a table node", {
+  skip_if_not(sqlglot_available(), "sqlglot not available")
+  sql <- paste(
+    "MERGE INTO dbo.target AS tgt",
+    "USING dbo.source AS src ON tgt.id = src.id",
+    "WHEN MATCHED THEN UPDATE SET tgt.amount = src.amount"
+  )
+  s <- merge_update_graph_schema()
+  ir <- classify_transform(build_ir(parse_sql(sql, schema = s)))
+  g <- build_graph(ir, schema = s)
+
+  expect_false("target" %in% tolower(g$table_nodes$table))
+  expect_true("source" %in% tolower(g$table_nodes$table))
+
+  out_stage <- g$stage_nodes[g$stage_nodes$role == "output", ]
+  expect_equal(nrow(out_stage), 1L)
+  expect_equal(out_stage$output_table, "dbo.target")
+
+  src_node <- g$table_nodes[g$table_nodes$table == "source", ]
+  edge <- g$col_edges[g$col_edges$from_node_id == src_node$node_id &
+                         g$col_edges$from_port == "amount", ]
+  expect_equal(nrow(edge), 1L)
+  expect_equal(edge$to_port, "amount")
+})
+
+test_that("a later SELECT * from the UPDATE target keeps its full real schema", {
+  skip_if_not(sqlglot_available(), "sqlglot not available")
+  s <- merge_update_graph_schema()
+  sql <- paste(
+    "UPDATE dbo.target SET amount = 5 WHERE id = 1;",
+    "SELECT * FROM dbo.target;"
+  )
+  ir <- build_ir(parse_sql(sql, schema = s))
+  select_stage <- ir$stages[ir$stages$statement_index == 2, ]
+  proj <- ir$projections[ir$projections$stage_id == select_stage$stage_id, ]
+  # Real catalog columns (id, amount, name), not just the UPDATE's SET list.
+  expect_setequal(proj$output, c("id", "amount", "name"))
+})

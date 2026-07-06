@@ -196,6 +196,11 @@ classify_one <- function(text) {
   if (grepl("^DROP TABLE", kw))                           return("drop")
   if (grepl("^BEGIN TRAN\\b|^BEGIN TRANSACTION\\b|^COMMIT\\b|^ROLLBACK\\b",
             kw))                                          return("transaction")
+  if (grepl("^MERGE\\b", kw))                              return("merge")
+  # Every UPDATE is routed through the select path; a plain `UPDATE t SET
+  # ... FROM ... JOIN ...` has no SELECT keyword at all, so (unlike
+  # CREATE TABLE/INSERT) there's no depth-0-SELECT form to discriminate.
+  if (grepl("^UPDATE\\b", kw))                             return("update")
 
   if (grepl("^CREATE TABLE", kw)) {
     return(if (has_depth0_select(text)) "select_into" else "create_table")
@@ -229,17 +234,17 @@ classify_one <- function(text) {
 #'
 #' Adds a `kind` column to the tibble returned by [split_statements()].
 #' Classification follows the ordered rule table in the package design
-#' (DECLARE > SET > DROP > CREATE TABLE > INDEX > WITH > INSERT > SELECT),
-#' using a paren-depth 0, string-aware SELECT test to discriminate
-#' CTAS/INSERT-SELECT from plain CREATE TABLE / INSERT-VALUES.
+#' (DECLARE > SET > DROP > MERGE > UPDATE > CREATE TABLE > INDEX > WITH >
+#' INSERT > SELECT), using a paren-depth 0, string-aware SELECT test to
+#' discriminate CTAS/INSERT-SELECT from plain CREATE TABLE / INSERT-VALUES.
 #'
 #' @param statements_raw A tibble with at least `seq` and `text` columns,
 #'   as returned by [split_statements()].
 #'
 #' @return The input tibble with an additional `kind` character column. Values:
-#'   `"declare"`, `"set_var"`, `"drop"`, `"transaction"`, `"create_index"`,
-#'   `"create_table"`, `"select_into"`, `"select"`, `"insert_select"`,
-#'   `"insert_values"`, `"unknown"`.
+#'   `"declare"`, `"set_var"`, `"drop"`, `"transaction"`, `"merge"`,
+#'   `"update"`, `"create_index"`, `"create_table"`, `"select_into"`,
+#'   `"select"`, `"insert_select"`, `"insert_values"`, `"unknown"`.
 #' @export
 classify_statements <- function(statements_raw) {
   kinds <- vapply(statements_raw$text, classify_one, character(1),

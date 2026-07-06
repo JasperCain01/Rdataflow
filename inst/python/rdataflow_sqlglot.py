@@ -253,12 +253,231 @@ def _stage_from_select(select, name, role):
     }
 
 
+def _describe_set_assignment(eq):
+    """Describe one `col = expr` assignment (UPDATE SET or MERGE THEN UPDATE
+    SET). Mirrors `_describe_projection`, but the "expression" side (the
+    right-hand side) is what's summarised — the left-hand side is just the
+    assigned column name, not a computed value.
+    """
+    target = eq.this
+    rhs = eq.expression
+    output = target.name if isinstance(target, exp.Column) else target.sql(dialect="tsql")
+    funcs = [_func_name(f) for f in rhs.find_all(exp.Func)]
+    return {
+        "output": output,
+        "expr": rhs.sql(dialect="tsql"),
+        "columns": _collect_columns(rhs, "value"),
+        "functions": funcs,
+        "is_aggregate": any(isinstance(f, exp.AggFunc) for f in rhs.find_all(exp.Func)),
+        "has_window": rhs.find(exp.Window) is not None,
+        "has_case": rhs.find(exp.Case) is not None,
+    }
+
+
+def _describe_merge_insert(insert_node):
+    """Describe the column <- value pairs of a MERGE ... WHEN NOT MATCHED
+    THEN INSERT (cols) VALUES (vals). When no explicit column list is given,
+    falls back to each value's own column name (`alias_or_name`), which
+    covers the common case of inserting straight from the USING source.
+    """
+    cols = insert_node.args.get("this")
+    values_expr = insert_node.args.get("expression")
+    if isinstance(values_expr, exp.Tuple):
+        values = values_expr.expressions
+    elif values_expr is not None:
+        values = [values_expr]
+    else:
+        values = []
+
+    if isinstance(cols, exp.Tuple):
+        names = [c.name if isinstance(c, exp.Column) else c.this.name
+                for c in cols.expressions]
+    else:
+        names = [None] * len(values)
+
+    out = []
+    for name, val in zip(names, values):
+        output = name if name is not None else val.alias_or_name
+        if not output:
+            continue
+        funcs = [_func_name(f) for f in val.find_all(exp.Func)]
+        out.append({
+            "output": output,
+            "expr": val.sql(dialect="tsql"),
+            "columns": _collect_columns(val, "value"),
+            "functions": funcs,
+            "is_aggregate": any(isinstance(f, exp.AggFunc) for f in val.find_all(exp.Func)),
+            "has_window": val.find(exp.Window) is not None,
+            "has_case": val.find(exp.Case) is not None,
+        })
+    return out
+
+
+def _table_qualified_name(t):
+    """SQL text for just a table's catalog.schema.table identifier, with no
+    trailing "AS alias" (unlike `t.sql()`, which includes the alias when the
+    Table node carries one — as MERGE's target and USING tables always do).
+    """
+    bare = exp.Table(this=t.this, db=t.args.get("db"), catalog=t.args.get("catalog"))
+    return bare.sql(dialect="tsql")
+
+
+def _update_target_name(stmt):
+    """Resolve an UPDATE statement's true physical target table name.
+
+    `UPDATE t SET ... FROM dbo.target t JOIN ...` names the FROM alias
+    right after UPDATE, not a table; when the bare identifier matches a
+    FROM/JOIN alias, resolve to that table instead. Otherwise the
+    identifier is already the (possibly schema-qualified) physical table.
+    """
+    target = stmt.this
+    if not isinstance(target, exp.Table):
+        return None
+    frm = _arg(stmt, "from", "from_")
+    if frm is not None and target.db is None:
+        primary = frm.this
+        candidates = [primary] + [j.this for j in (primary.args.get("joins") or [])]
+        for rel in candidates:
+            if isinstance(rel, exp.Table) and rel.alias_or_name == target.name:
+                return _table_qualified_name(rel)
+    return _table_qualified_name(target)
+
+
+def _stage_from_update(stmt):
+    """Build a pseudo-select stage descriptor for UPDATE ... SET ... [FROM ...].
+
+    The FROM/JOIN chain (if any) becomes `sources`/`joins` exactly like a
+    SELECT's; each SET assignment becomes a projection whose output is the
+    assigned column and whose source columns come from the right-hand side.
+    Joins live nested under `from_.this.args["joins"]` for Update (unlike
+    Select, where they're a sibling arg of the statement).
+    """
+    frm = _arg(stmt, "from", "from_")
+    sources = []
+    joins = []
+
+    if frm is not None:
+        primary = frm.this
+        entry = _relation_entry(primary)
+        if entry is not None:
+            sources.append(entry)
+        for j in primary.args.get("joins") or []:
+            on = j.args.get("on")
+            kind = (j.kind or "").upper()
+            if not kind and isinstance(j.this, exp.Lateral):
+                kind = "APPLY"
+            joins.append({
+                "side": (j.side or "").upper(),
+                "kind": kind,
+                "on": on.sql(dialect="tsql") if on is not None else None,
+                "keys": _join_keys(on),
+            })
+            rel_entry = _relation_entry(j.this)
+            if rel_entry is not None:
+                sources.append(rel_entry)
+    else:
+        # No FROM: the updated table is its own (only) source — a
+        # self-referencing update (e.g. `SET amount = amount + 1`).
+        entry = _relation_entry(stmt.this)
+        if entry is not None:
+            sources.append(entry)
+
+    where = _arg(stmt, "where")
+    where_pred = where.this if where is not None else None
+
+    return {
+        "name": None,   # caller fills in the resolved target table name
+        "role": "output",
+        "projections": [_describe_set_assignment(eq)
+                        for eq in stmt.args.get("expressions") or []],
+        "sources": sources,
+        "joins": joins,
+        "group_by": [],
+        "where": where_pred.sql(dialect="tsql") if where_pred is not None else None,
+        "where_columns": [{"table": c.table or None, "name": c.name}
+                          for c in where_pred.find_all(exp.Column)]
+                         if where_pred is not None else [],
+    }
+
+
+def _merge_target_name(stmt):
+    """MERGE's target is always a direct table reference (the USING clause
+    carries the source alias), so no alias-shadowing resolution is needed."""
+    target = stmt.this
+    return _table_qualified_name(target) if isinstance(target, exp.Table) else None
+
+
+def _stages_from_merge(stmt):
+    """Build the pseudo output stage for a MERGE statement.
+
+    Combines the USING source, the ON join keys, and every WHEN MATCHED
+    THEN UPDATE SET / WHEN NOT MATCHED THEN INSERT column mapping into one
+    output stage — MERGE conceptually produces the target's rows via
+    several possible assignment paths, and which WHEN branch fires per row
+    is not modelled (matching the "conditional execution is not traced"
+    limitation already documented for IF/WHILE). The first assignment for a
+    given output column wins if both branches set it.
+    """
+    target = stmt.this
+    using = stmt.args.get("using")
+    on = stmt.args.get("on")
+
+    sources = []
+    target_entry = _relation_entry(target)
+    if target_entry is not None:
+        sources.append(target_entry)
+    using_entry = _relation_entry(using) if using is not None else None
+    if using_entry is not None:
+        sources.append(using_entry)
+
+    join_keys = _join_keys(on)
+    joins = [{
+        "side": "",
+        "kind": "",
+        "on": on.sql(dialect="tsql") if on is not None else None,
+        "keys": join_keys,
+    }] if (on is not None or join_keys) else []
+
+    projections = []
+    seen_outputs = set()
+    whens = stmt.args.get("whens")
+    when_list = whens.expressions if whens is not None else []
+    for w in when_list:
+        then = w.args.get("then")
+        if isinstance(then, exp.Update):
+            candidates = [_describe_set_assignment(eq)
+                         for eq in then.args.get("expressions") or []]
+        elif isinstance(then, exp.Insert):
+            candidates = _describe_merge_insert(then)
+        else:
+            candidates = []
+        for proj in candidates:
+            if proj["output"] and proj["output"] not in seen_outputs:
+                seen_outputs.add(proj["output"])
+                projections.append(proj)
+
+    return [{
+        "name": None,   # caller fills in the resolved target table name
+        "role": "output",
+        "projections": projections,
+        "sources": sources,
+        "joins": joins,
+        "group_by": [],
+        "where": None,
+        "where_columns": [],
+    }]
+
+
 def _output_table_name(stmt):
     """Determine the materialised output table name of a statement, if any.
 
-    Covers SELECT ... INTO, INSERT INTO, and CREATE TABLE AS SELECT. Returns
-    ``None`` for a bare SELECT (an anonymous result set).
+    Covers SELECT ... INTO, INSERT INTO, CREATE TABLE AS SELECT, MERGE, and
+    UPDATE. Returns ``None`` for a bare SELECT (an anonymous result set).
     """
+    if isinstance(stmt, exp.Update):
+        return _update_target_name(stmt)
+    if isinstance(stmt, exp.Merge):
+        return _merge_target_name(stmt)
     into = stmt.args.get("into")
     if into is not None:
         return into.this.sql(dialect="tsql")
@@ -356,6 +575,33 @@ def _extract_statement(stmt, index):
             _derived_stages(sel, stages, seen)
             name = cte.alias if k == 1 else "%s (branch %d)" % (cte.alias, k)
             stages.append(_stage_from_select(sel, name, "cte"))
+
+    # MERGE / UPDATE have no nested SELECT to unwrap into branches — build
+    # their pseudo-select stage(s) directly and return early (any CTE stages
+    # collected above are kept).
+    if isinstance(stmt, exp.Update):
+        output_table = _update_target_name(stmt)
+        stage = _stage_from_update(stmt)
+        stage["name"] = output_table if output_table is not None else "result"
+        stages.append(stage)
+        return {
+            "index": index,
+            "kind": _statement_kind(stmt),
+            "output_table": output_table,
+            "stages": stages,
+        }
+
+    if isinstance(stmt, exp.Merge):
+        output_table = _merge_target_name(stmt)
+        for stage in _stages_from_merge(stmt):
+            stage["name"] = output_table if output_table is not None else "result"
+            stages.append(stage)
+        return {
+            "index": index,
+            "kind": _statement_kind(stmt),
+            "output_table": output_table,
+            "stages": stages,
+        }
 
     # The statement's main query becomes the "output" stage(s) — one per
     # UNION branch so no branch's lineage is silently dropped. For

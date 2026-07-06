@@ -211,6 +211,7 @@ save_sqlflow(g, "flow.png")
 - Derived tables (`FROM / JOIN (SELECT ...) alias`) and `CROSS/OUTER APPLY` — each becomes its own stage
 - `UNION` / `UNION ALL` / `EXCEPT` / `INTERSECT` — every branch is traced
 - `SELECT ... INTO #temp` and `INSERT INTO ... SELECT` (explicit INSERT column lists respected)
+- `MERGE` and `UPDATE ... FROM ... JOIN` — the target table becomes an output stage fed by the `USING`/`FROM`/`JOIN` sources; `SET` assignments and `WHEN MATCHED`/`WHEN NOT MATCHED` column mappings become projections
 - `INNER`, `LEFT`, `RIGHT`, `FULL OUTER`, `CROSS` joins
 - `GROUP BY`, `WHERE` (shown per stage; `WHERE` columns are lineage-tracked as filter edges)
 - Window functions (`OVER (PARTITION BY ...)`)
@@ -228,9 +229,15 @@ misleading:
 
 - **Conditional execution is not modelled.** Statements inside `IF` /
   `WHILE` blocks are unwrapped and shown as if they always run (a message
-  notes this).
-- **`MERGE` and `UPDATE ... FROM` are not traced** — they are skipped with
-  a warning.
+  notes this); likewise a `MERGE`'s `WHEN MATCHED` and `WHEN NOT MATCHED`
+  branches are combined into one output stage rather than modelled as
+  alternatives.
+- **`UPDATE t SET ... FROM dbo.target t JOIN ...`** — when the identifier
+  right after `UPDATE` reuses a `FROM`-clause alias instead of naming the
+  table directly, the target may be shown under the alias name rather than
+  the real table. Repeating the qualified table name after `UPDATE`
+  (`UPDATE dbo.target SET ... FROM dbo.target t JOIN ...`) always resolves
+  correctly and is the recommended style.
 - **`HAVING`, `DISTINCT`, `TOP`, and `ORDER BY` are not captured** in the
   lineage model.
 - **Same-named tables in different schemas collide** in the qualifier

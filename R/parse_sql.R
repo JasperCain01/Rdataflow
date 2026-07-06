@@ -123,8 +123,11 @@ parse_sql <- function(sql, schema = NULL, dialect = "tsql") {
   stmts    <- unwrapped$statements
   skipped  <- unwrapped$notes
 
-  # Kinds that route to sqlglot (SELECT-bearing statements).
-  select_kinds <- c("select", "select_into", "insert_select")
+  # Kinds that route to sqlglot. MERGE and UPDATE have no SELECT keyword of
+  # their own, but they carry the same kind of lineage (column <- column
+  # assignments, FROM/JOIN sources) so they go through the identical
+  # variable-substitution / temp-schema-merge / isolated-parse path.
+  select_kinds <- c("select", "select_into", "insert_select", "merge", "update")
 
   # --- Step 2: thread registries forward through the script ---------------
   var_registry  <- tibble::tibble(
@@ -249,8 +252,14 @@ parse_sql <- function(sql, schema = NULL, dialect = "tsql") {
       }
 
       # After a SELECT INTO / INSERT SELECT, register the output columns in
-      # the temp registry so downstream statements can resolve them.
-      if (!is.null(output_tbl) && nzchar(output_tbl)) {
+      # the temp registry so downstream statements can resolve them. MERGE
+      # and UPDATE are excluded: their output_tbl is an *existing* physical
+      # table, and registering it here would make merge_temp_schema() treat
+      # it as authoritative and drop the table's real (fully-typed) catalog
+      # columns for every later statement — collapsing `SELECT * FROM t`
+      # down to just the columns the UPDATE/MERGE happened to touch.
+      if (!is.null(output_tbl) && nzchar(output_tbl) &&
+            kind %in% c("select_into", "insert_select")) {
         temp_registry <- register_select_output(
           temp_registry, parsed, output_tbl, origin_seq = seq
         )
@@ -302,6 +311,22 @@ extract_output_table <- function(text, kind) {
   }
   if (kind == "create_table") {
     return(match_ident_after(text, "^CREATE\\s+TABLE"))
+  }
+  if (kind == "merge") {
+    # MERGE INTO <target> ...
+    return(match_ident_after(text, "^MERGE\\s+INTO"))
+  }
+  if (kind == "update") {
+    # UPDATE <target> SET ... — a text-level match, so it captures whatever
+    # identifier immediately follows UPDATE. That's the physical table for
+    # `UPDATE dbo.target SET ...` (with or without a FROM clause), but for
+    # `UPDATE t SET ... FROM dbo.target t JOIN ...` (the FROM alias reused
+    # right after UPDATE) it captures the bare alias "t", not "dbo.target".
+    # The Python layer resolves that case correctly via _update_target_name();
+    # this R-level value only wins when non-NULL (see parse_sql()'s `%||%`),
+    # so prefer repeating the full table name after UPDATE in scripts that
+    # also alias it in FROM.
+    return(match_ident_after(text, "^UPDATE"))
   }
   NULL
 }

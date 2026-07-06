@@ -146,3 +146,91 @@ test_that("WHERE-clause columns are captured as where_columns", {
   where_cols <- vapply(stg$where_columns, function(c) c$name, character(1))
   expect_equal(where_cols, "b")
 })
+
+# --- Batch I regression tests (MERGE / UPDATE support) ----------------------
+
+merge_update_schema <- function() {
+  schema_from_list(list(
+    "dbo.target" = c(id = "INT", amount = "DECIMAL", name = "VARCHAR"),
+    "dbo.source" = c(id = "INT", amount = "DECIMAL", name = "VARCHAR")
+  ))
+}
+
+test_that("plain UPDATE produces a single output stage from SET assignments", {
+  skip_if_not(sqlglot_available(), "sqlglot not available")
+  res <- parse_sql("UPDATE dbo.target SET amount = 5 WHERE id = 1",
+                   schema = merge_update_schema())
+  st <- res$statements[[1]]
+  expect_equal(st$kind, "update")
+  expect_equal(length(st$stages), 1L)
+  expect_equal(st$stages[[1]]$role, "output")
+  outs <- vapply(st$stages[[1]]$projections, function(p) p$output, character(1))
+  expect_equal(outs, "amount")
+})
+
+test_that("UPDATE ... FROM ... JOIN names projections from SET targets and traces sources", {
+  skip_if_not(sqlglot_available(), "sqlglot not available")
+  sql <- paste(
+    "UPDATE dbo.target",
+    "SET amount = s.amount, name = s.name",
+    "FROM dbo.target t JOIN dbo.source s ON s.id = t.id",
+    "WHERE t.id > 0"
+  )
+  res <- parse_sql(sql, schema = merge_update_schema())
+  st <- res$statements[[1]]
+  expect_equal(st$output_table, "dbo.target")
+
+  stg <- st$stages[[1]]
+  outs <- vapply(stg$projections, function(p) p$output, character(1))
+  expect_setequal(outs, c("amount", "name"))
+
+  src_tables <- vapply(stg$sources, function(s) s$table, character(1))
+  expect_setequal(src_tables, c("target", "source"))
+
+  amount_cols <- stg$projections[[which(outs == "amount")]]$columns
+  expect_equal(vapply(amount_cols, function(c) c$name, character(1)), "amount")
+
+  where_cols <- vapply(stg$where_columns, function(c) c$name, character(1))
+  expect_equal(where_cols, "id")
+})
+
+test_that("MERGE captures USING source, ON join keys, and WHEN branch projections", {
+  skip_if_not(sqlglot_available(), "sqlglot not available")
+  sql <- paste(
+    "MERGE INTO dbo.target AS tgt",
+    "USING dbo.source AS src ON tgt.id = src.id",
+    "WHEN MATCHED THEN UPDATE SET tgt.amount = src.amount, tgt.name = src.name",
+    "WHEN NOT MATCHED THEN INSERT (id, amount, name) VALUES (src.id, src.amount, src.name)"
+  )
+  res <- parse_sql(sql, schema = merge_update_schema())
+  st <- res$statements[[1]]
+  expect_equal(st$kind, "merge")
+  expect_equal(st$output_table, "dbo.target")
+  expect_equal(length(st$stages), 1L)
+
+  stg <- st$stages[[1]]
+  src_tables <- vapply(stg$sources, function(s) s$table, character(1))
+  expect_setequal(src_tables, c("target", "source"))
+
+  outs <- vapply(stg$projections, function(p) p$output, character(1))
+  expect_setequal(outs, c("amount", "name", "id"))
+
+  expect_equal(length(stg$joins), 1L)
+  keys <- stg$joins[[1]]$keys
+  expect_equal(length(keys), 1L)
+  expect_equal(keys[[1]]$left, "tgt.id")
+  expect_equal(keys[[1]]$right, "src.id")
+})
+
+test_that("MERGE INSERT without an explicit column list falls back to source column names", {
+  skip_if_not(sqlglot_available(), "sqlglot not available")
+  sql <- paste(
+    "MERGE INTO dbo.target AS tgt",
+    "USING dbo.source AS src ON tgt.id = src.id",
+    "WHEN NOT MATCHED THEN INSERT VALUES (src.id, src.amount, src.name)"
+  )
+  res <- parse_sql(sql, schema = merge_update_schema())
+  outs <- vapply(res$statements[[1]]$stages[[1]]$projections,
+                 function(p) p$output, character(1))
+  expect_setequal(outs, c("id", "amount", "name"))
+})
