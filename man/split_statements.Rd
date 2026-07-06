@@ -24,6 +24,9 @@ Empty chunks (e.g. between \verb{;;}) are silently dropped.
 \description{
 Applies a character-level state machine that recognises \verb{;} and lone \code{GO}
 batch terminators only when they appear outside string literals, block
-comments, line comments, and bracket-quoted identifiers. Original text
-(including comments) is preserved in each chunk.
+comments (including nested \verb{/* /* */ */} comments), line comments, and
+bracket-quoted identifiers. \code{GO} is only treated as a terminator when it
+is the first token on its line (matching SQL Server's rule that \code{GO} must
+appear alone on a line); an optional repeat count (\verb{GO 5}) is consumed
+with it. Original text (including comments) is preserved in each chunk.
 }

@@ -12,14 +12,14 @@ as returned by \code{\link[=split_statements]{split_statements()}}.}
 }
 \value{
 The input tibble with an additional \code{kind} character column. Values:
-\code{"declare"}, \code{"set_var"}, \code{"drop"}, \code{"create_index"}, \code{"create_table"},
-\code{"select_into"}, \code{"select"}, \code{"insert_select"}, \code{"insert_values"},
-\code{"unknown"}.
+\code{"declare"}, \code{"set_var"}, \code{"drop"}, \code{"transaction"}, \code{"create_index"},
+\code{"create_table"}, \code{"select_into"}, \code{"select"}, \code{"insert_select"},
+\code{"insert_values"}, \code{"unknown"}.
 }
 \description{
 Adds a \code{kind} column to the tibble returned by \code{\link[=split_statements]{split_statements()}}.
 Classification follows the ordered rule table in the package design
-(DECLARE > SET > DROP > INDEX > CREATE TABLE > WITH > INSERT > SELECT),
-using a paren-depth 0 SELECT test to discriminate CTAS/INSERT-SELECT
-from plain CREATE TABLE / INSERT-VALUES.
+(DECLARE > SET > DROP > CREATE TABLE > INDEX > WITH > INSERT > SELECT),
+using a paren-depth 0, string-aware SELECT test to discriminate
+CTAS/INSERT-SELECT from plain CREATE TABLE / INSERT-VALUES.
 }

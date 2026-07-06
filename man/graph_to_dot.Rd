@@ -8,7 +8,9 @@ graph_to_dot(
   graph,
   show_col_edges = TRUE,
   show_legend = TRUE,
-  rank_lanes = TRUE
+  rank_lanes = TRUE,
+  rankdir = c("LR", "TB"),
+  cluster_statements = TRUE
 )
 }
 \arguments{
@@ -27,6 +29,14 @@ that nodes at the same dependency depth are aligned in the same column.
 This turns parallel branches into aligned vertical lanes, making complex
 multi-stage scripts easier to follow. Pass \code{FALSE} to let Graphviz place
 nodes freely.}
+
+\item{rankdir}{Graphviz layout direction: \code{"LR"} (default, left-to-right)
+or \code{"TB"} (top-to-bottom; useful for tall narrow display areas).}
+
+\item{cluster_statements}{If \code{TRUE} (default), scripts with more than one
+statement draw each statement's stages inside a labelled cluster box
+("Statement 2 -> #summary"), making multi-statement flows much easier
+to read. Single-statement scripts are never clustered.}
 }
 \value{
 A length-1 character string of valid DOT code.
