@@ -77,6 +77,12 @@
   (combined into one stage, since which `WHEN` branch fires per row is not
   modelled — the same simplification already applied to `IF`/`WHILE`).
 
+* `HAVING`, `DISTINCT`, and `TOP` (including `TOP n PERCENT`) are now
+  captured per stage: the diagram gains a combined footer row below the
+  `WHERE` footer ("DISTINCT; TOP 100; HAVING ..."), truncated for long
+  predicates with the full text on hover; `explain_sqlflow()` narrates them
+  ("keeps distinct rows", "keeps top 100", "filters groups: HAVING ...").
+
 ### Bug fixes
 
 * `GO` is only treated as a batch terminator when it is the first token on

@@ -58,7 +58,10 @@ build_ir <- function(parsed) {
         statement_kind = scalar_chr(st$kind),
         output_table = scalar_chr(st$output_table),
         is_output = identical(stg$role, "output"),
-        where = scalar_chr(stg$where)
+        where = scalar_chr(stg$where),
+        having = scalar_chr(stg$having),
+        distinct = isTRUE(as.logical(stg$distinct)),
+        top = scalar_chr(stg$top)
       )
 
       # --- sources -----------------------------------------------------------
@@ -206,7 +209,8 @@ ir_proto <- list(
   stages = tibble::tibble(
     stage_id = integer(), statement_index = integer(), name = character(),
     role = character(), statement_kind = character(),
-    output_table = character(), is_output = logical(), where = character()
+    output_table = character(), is_output = logical(), where = character(),
+    having = character(), distinct = logical(), top = character()
   ),
   projections = tibble::tibble(
     stage_id = integer(), output = character(), expr = character(),

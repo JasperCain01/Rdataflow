@@ -290,7 +290,10 @@ dot_stage_node <- function(row) {
     role            = row$role,
     columns_tbl     = row$columns[[1]],
     transform_label = row$transform_label,
-    where           = if ("where" %in% names(row)) row$where else NA_character_
+    where           = if ("where" %in% names(row)) row$where else NA_character_,
+    having          = if ("having" %in% names(row)) row$having else NA_character_,
+    distinct        = if ("distinct" %in% names(row)) isTRUE(row$distinct) else FALSE,
+    top             = if ("top" %in% names(row)) row$top else NA_character_
   )
   sprintf('  %s [label=<%s>]', row$node_id, html)
 }
@@ -365,9 +368,11 @@ html_table_label <- function(table_label, columns_tbl, n_hidden = 0L) {
 
 # Build the HTML table label for a stage node.
 # columns_tbl has cols: col_name, expr (optional), transform_type. A non-NA
-# `where` renders as a footer row showing the stage's filter predicate.
+# `where` renders as a footer row showing the stage's filter predicate;
+# `distinct`/`top`/`having` render as a second, combined footer row after it.
 html_stage_label <- function(display_name, role, columns_tbl, transform_label,
-                             where = NA_character_) {
+                             where = NA_character_, having = NA_character_,
+                             distinct = FALSE, top = NA_character_) {
   header_bg  <- if (role %in% c("cte", "subquery")) .cte_header_bg else .out_header_bg
   role_label <- if (identical(role, "cte")) "CTE"
                 else if (identical(role, "subquery")) "subquery"
@@ -451,7 +456,31 @@ html_stage_label <- function(display_name, role, columns_tbl, transform_label,
     NULL
   }
 
-  rows_str <- paste(c(header, col_rows, footer, where_footer), collapse = "")
+  # Combined DISTINCT/TOP/HAVING footer: same styling as the WHERE footer,
+  # truncated for readability with the full text in a hover tooltip. Parts
+  # are joined "; " like the transform-summary footer above.
+  modifier_parts <- c(
+    if (isTRUE(distinct)) "DISTINCT",
+    if (!is.na(top) && nzchar(top)) paste0("TOP ", top),
+    if (!is.na(having) && nzchar(having)) paste0("HAVING ", having)
+  )
+  modifier_footer <- if (length(modifier_parts) > 0L) {
+    full <- paste(modifier_parts, collapse = "; ")
+    disp <- if (nchar(full) > 70L) paste0(substr(full, 1L, 67L), "...") else full
+    sprintf(
+      paste0(
+        '<TR><TD COLSPAN="2" BGCOLOR="%s" ALIGN="LEFT" HREF="#" TOOLTIP="%s">',
+        '<FONT COLOR="#8a5a00" POINT-SIZE="9">%s</FONT>',
+        '</TD></TR>'
+      ),
+      .transform_label_bg, html_esc(full), html_esc(disp)
+    )
+  } else {
+    NULL
+  }
+
+  rows_str <- paste(c(header, col_rows, footer, where_footer, modifier_footer),
+                    collapse = "")
   sprintf(
     '<TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="3">%s</TABLE>',
     rows_str

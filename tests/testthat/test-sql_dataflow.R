@@ -156,3 +156,19 @@ test_that("explain_sqlflow accepts an IR and produces markdown", {
 test_that("explain_sqlflow rejects invalid input", {
   expect_error(explain_sqlflow(42), "SQL string or an rdataflow_ir")
 })
+
+# --- Batch J regression tests (HAVING / DISTINCT / TOP) ---------------------
+
+test_that("explain_sqlflow narrates DISTINCT, TOP, and HAVING", {
+  skip_if_not(sqlglot_available(), "sqlglot not available")
+  s <- schema_from_list(list("dbo.orders" = c(customer_id = "INT", amount = "DECIMAL")))
+  sql <- paste(
+    "SELECT DISTINCT TOP 100 customer_id, SUM(amount) AS total",
+    "FROM dbo.orders GROUP BY customer_id HAVING SUM(amount) > 100"
+  )
+  txt <- paste(explain_sqlflow(sql, schema = s), collapse = "\n")
+
+  expect_match(txt, "keeps distinct rows", fixed = TRUE)
+  expect_match(txt, "keeps top 100", fixed = TRUE)
+  expect_match(txt, "filters groups: HAVING SUM", fixed = TRUE)
+})

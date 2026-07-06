@@ -85,3 +85,33 @@ test_that("build_ir returns an empty typed filters tibble when there is no WHERE
   expect_equal(nrow(ir$filters), 0)
   expect_setequal(names(ir$filters), c("stage_id", "src_alias", "src_table", "src_column"))
 })
+
+# --- Batch J regression tests (HAVING / DISTINCT / TOP) ---------------------
+
+test_that("build_ir captures HAVING, DISTINCT, and TOP on the stage row", {
+  skip_if_not(sqlglot_available(), "sqlglot not available")
+  s <- schema_from_list(list("dbo.orders" = c(customer_id = "INT", amount = "DECIMAL")))
+  sql <- paste(
+    "SELECT DISTINCT TOP 100 customer_id, SUM(amount) AS total",
+    "FROM dbo.orders GROUP BY customer_id HAVING SUM(amount) > 100"
+  )
+  ir <- build_ir(parse_sql(sql, schema = s))
+  expect_true(ir$stages$distinct)
+  expect_equal(ir$stages$top, "100")
+  expect_match(ir$stages$having, "SUM.*> 100")
+})
+
+test_that("build_ir defaults having/distinct/top when absent", {
+  skip_if_not(sqlglot_available(), "sqlglot not available")
+  ir <- test_ir()
+  expect_true(all(is.na(ir$stages$having)))
+  expect_true(all(!ir$stages$distinct))
+  expect_true(all(is.na(ir$stages$top)))
+})
+
+test_that("build_ir captures TOP n PERCENT verbatim", {
+  skip_if_not(sqlglot_available(), "sqlglot not available")
+  s <- schema_from_list(list("dbo.t" = c(a = "INT")))
+  ir <- build_ir(parse_sql("SELECT TOP 10 PERCENT a FROM dbo.t", schema = s))
+  expect_equal(ir$stages$top, "10 PERCENT")
+})

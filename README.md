@@ -213,7 +213,7 @@ save_sqlflow(g, "flow.png")
 - `SELECT ... INTO #temp` and `INSERT INTO ... SELECT` (explicit INSERT column lists respected)
 - `MERGE` and `UPDATE ... FROM ... JOIN` — the target table becomes an output stage fed by the `USING`/`FROM`/`JOIN` sources; `SET` assignments and `WHEN MATCHED`/`WHEN NOT MATCHED` column mappings become projections
 - `INNER`, `LEFT`, `RIGHT`, `FULL OUTER`, `CROSS` joins
-- `GROUP BY`, `WHERE` (shown per stage; `WHERE` columns are lineage-tracked as filter edges)
+- `GROUP BY`, `WHERE` (shown per stage; `WHERE` columns are lineage-tracked as filter edges), `HAVING`, `DISTINCT`, `TOP` (including `TOP n PERCENT`) — all shown per stage
 - Window functions (`OVER (PARTITION BY ...)`)
 - Column-level lineage distinguishes `CASE WHEN` predicate columns ("condition") and window `PARTITION BY`/`ORDER BY` columns ("partition") from ordinary value columns
 - T-SQL date functions (`DATEDIFF`, `DATEADD`, `CONVERT`, ...)
@@ -238,7 +238,7 @@ misleading:
   the real table. Repeating the qualified table name after `UPDATE`
   (`UPDATE dbo.target SET ... FROM dbo.target t JOIN ...`) always resolves
   correctly and is the recommended style.
-- **`HAVING`, `DISTINCT`, `TOP`, and `ORDER BY` are not captured** in the
+- **`ORDER BY` (outside a window function) is not captured** in the
   lineage model.
 - **Same-named tables in different schemas collide** in the qualifier
   mapping (last one wins); scoped CTE names are handled, schema-qualified

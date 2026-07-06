@@ -23,7 +23,8 @@
 #   table_nodes$columns : col_name, col_type, used, is_key
 #   stage_nodes$columns : col_name, expr, transform_type
 # table_nodes also carry n_hidden (count of columns suppressed by max_cols);
-# stage_nodes also carry statement_index and the stage's WHERE predicate.
+# stage_nodes also carry statement_index and the stage's WHERE/HAVING
+# predicates, DISTINCT flag, and TOP value.
 # ---------------------------------------------------------------------------
 
 #' Build the flow graph from a lineage IR
@@ -204,6 +205,9 @@ make_stage_nodes <- function(ir) {
       display_name    = character(),
       transform_label = character(),
       where           = character(),
+      having          = character(),
+      distinct        = logical(),
+      top             = character(),
       columns         = list()
     ))
   }
@@ -250,6 +254,9 @@ make_stage_nodes <- function(ir) {
       display_name    = display_name,
       transform_label = transform_label,
       where           = if ("where" %in% names(stg)) stg$where else NA_character_,
+      having          = if ("having" %in% names(stg)) stg$having else NA_character_,
+      distinct        = if ("distinct" %in% names(stg)) isTRUE(stg$distinct) else FALSE,
+      top             = if ("top" %in% names(stg)) stg$top else NA_character_,
       columns         = list(columns_tbl)
     )
   }) |> purrr::list_rbind()

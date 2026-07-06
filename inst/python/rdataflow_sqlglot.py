@@ -7,6 +7,7 @@ R lists. Keeping the traversal in one place also isolates sqlglot
 version differences (e.g. arg keys ``from_``/``with_`` in 30.x).
 """
 
+import re
 import sys
 import sqlglot
 from sqlglot import exp
@@ -239,6 +240,34 @@ def _where_columns(select):
             for c in where.this.find_all(exp.Column)]
 
 
+def _having_sql(select):
+    """Raw SQL of the HAVING predicate, if any (predicate only, like
+    `_where_sql` — the caller prefixes its own "HAVING " label)."""
+    having = _arg(select, "having")
+    return having.this.sql(dialect="tsql") if having is not None else None
+
+
+def _is_distinct(select):
+    """True if the SELECT has a DISTINCT modifier."""
+    return _arg(select, "distinct") is not None
+
+
+def _top_sql(select):
+    """Raw SQL of a T-SQL TOP clause (bare value, e.g. "100" or
+    "10 PERCENT"), or None. TOP maps to sqlglot's `select.args["limit"]`;
+    calling `.sql()` on the Limit node standalone always renders the
+    generic "LIMIT ..." keyword (TOP is a tsql-specific rendering only used
+    when generating the whole SELECT), so the leading keyword is stripped
+    here and the caller prefixes its own "TOP " label, matching the
+    WHERE/HAVING convention.
+    """
+    limit = _arg(select, "limit")
+    if limit is None:
+        return None
+    text = limit.sql(dialect="tsql")
+    return re.sub(r"(?i)^\s*(LIMIT|TOP)\s+", "", text)
+
+
 def _stage_from_select(select, name, role):
     """Build a stage descriptor from a SELECT node."""
     return {
@@ -250,6 +279,9 @@ def _stage_from_select(select, name, role):
         "group_by": _group_by(select),
         "where": _where_sql(select),
         "where_columns": _where_columns(select),
+        "having": _having_sql(select),
+        "distinct": _is_distinct(select),
+        "top": _top_sql(select),
     }
 
 
@@ -397,6 +429,10 @@ def _stage_from_update(stmt):
         "where_columns": [{"table": c.table or None, "name": c.name}
                           for c in where_pred.find_all(exp.Column)]
                          if where_pred is not None else [],
+        # HAVING/DISTINCT/TOP are SELECT-only constructs; UPDATE has none.
+        "having": None,
+        "distinct": False,
+        "top": None,
     }
 
 
@@ -465,6 +501,10 @@ def _stages_from_merge(stmt):
         "group_by": [],
         "where": None,
         "where_columns": [],
+        # HAVING/DISTINCT/TOP are SELECT-only constructs; MERGE has none.
+        "having": None,
+        "distinct": False,
+        "top": None,
     }]
 
 

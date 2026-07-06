@@ -144,6 +144,17 @@ explain_stage <- function(ir, stg, md = FALSE) {
     lines <- c(lines, paste0(b2, "filters: WHERE ", stg$where))
   }
 
+  # --- DISTINCT / TOP / HAVING ------------------------------------------------
+  if ("distinct" %in% names(stg) && isTRUE(stg$distinct)) {
+    lines <- c(lines, paste0(b2, "keeps distinct rows"))
+  }
+  if ("top" %in% names(stg) && !is.na(stg$top) && nzchar(stg$top)) {
+    lines <- c(lines, paste0(b2, "keeps top ", stg$top))
+  }
+  if ("having" %in% names(stg) && !is.na(stg$having) && nzchar(stg$having)) {
+    lines <- c(lines, paste0(b2, "filters groups: HAVING ", stg$having))
+  }
+
   # --- output columns --------------------------------------------------------
   proj <- ir$projections[ir$projections$stage_id == sid, , drop = FALSE]
   if (nrow(proj) > 0) {

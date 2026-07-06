@@ -302,3 +302,54 @@ test_that("legend lists condition/partition and filter entries only when present
   expect_match(filter_dot, "Filter column (WHERE)", fixed = TRUE)
   expect_false(grepl("Condition/partition column", filter_dot, fixed = TRUE))
 })
+
+# --- Batch J regression tests (HAVING / DISTINCT / TOP) ---------------------
+
+test_that("html_stage_label renders a combined DISTINCT/TOP/HAVING footer", {
+  html <- html_stage_label(
+    display_name = "result", role = "output",
+    columns_tbl = tibble::tibble(col_name = "a", expr = NA_character_,
+                                 transform_type = "passthrough"),
+    transform_label = "",
+    distinct = TRUE, top = "100", having = "SUM(amount) > 100"
+  )
+  expect_match(html, "DISTINCT; TOP 100; HAVING SUM\\(amount\\) &gt; 100")
+})
+
+test_that("html_stage_label omits the modifier footer when none apply", {
+  html <- html_stage_label(
+    display_name = "result", role = "output",
+    columns_tbl = tibble::tibble(col_name = "a", expr = NA_character_,
+                                 transform_type = "passthrough"),
+    transform_label = ""
+  )
+  expect_false(grepl("DISTINCT", html, fixed = TRUE))
+  expect_false(grepl("TOP", html, fixed = TRUE))
+  expect_false(grepl("HAVING", html, fixed = TRUE))
+})
+
+test_that("graph_to_dot renders DISTINCT/TOP/HAVING for a real query", {
+  skip_if_not(sqlglot_available(), "sqlglot not available")
+  s <- schema_from_list(list("dbo.orders" = c(customer_id = "INT", amount = "DECIMAL")))
+  sql <- paste(
+    "SELECT DISTINCT TOP 100 customer_id, SUM(amount) AS total",
+    "FROM dbo.orders GROUP BY customer_id HAVING SUM(amount) > 100"
+  )
+  ir <- classify_transform(build_ir(parse_sql(sql, schema = s)))
+  dot <- graph_to_dot(build_graph(ir, schema = s))
+  expect_match(dot, "DISTINCT; TOP 100; HAVING SUM")
+})
+
+test_that("long HAVING predicates truncate in the footer with the full text on hover", {
+  skip_if_not(sqlglot_available(), "sqlglot not available")
+  s <- schema_from_list(list("dbo.orders" = c(customer_id = "INT", amount = "DECIMAL")))
+  long_having <- paste(sprintf("amount > %d", 1:10), collapse = " OR ")
+  sql <- sprintf(
+    "SELECT customer_id, SUM(amount) AS total FROM dbo.orders GROUP BY customer_id HAVING %s",
+    long_having
+  )
+  ir <- classify_transform(build_ir(parse_sql(sql, schema = s)))
+  dot <- graph_to_dot(build_graph(ir, schema = s))
+  expect_match(dot, "HAVING .*amount.* &gt; 1.*\\.\\.\\.")
+  expect_match(dot, "TOOLTIP=\"HAVING .*amount.* &gt; 1")
+})
