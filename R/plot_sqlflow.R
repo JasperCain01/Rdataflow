@@ -871,8 +871,18 @@ dot_esc <- function(x) {
 
 # Escape HTML special characters so column names / labels render literally
 # inside Graphviz HTML-like labels.
+#
+# Control characters (newlines, tabs, carriage returns, other C0 bytes) are
+# NOT valid inside a Graphviz HTML-like label — a single raw newline in an
+# attribute value such as TOOLTIP="..." (which carries a column's full SQL
+# expression) makes Graphviz reject the entire node label with an opaque
+# "Error ... in label of node ..." message and the diagram fails to render.
+# Real-world SQL introduces them easily (multi-line string literals, a CASE /
+# WHERE spanning lines, a CR from a Windows-saved script), so collapse every
+# control character to a single space before escaping the HTML metacharacters.
 html_esc <- function(x) {
-  x <- gsub("&",  "&amp;",  as.character(x), fixed = TRUE)
+  x <- gsub("[[:cntrl:]]", " ", as.character(x))
+  x <- gsub("&",  "&amp;",  x, fixed = TRUE)
   x <- gsub("<",  "&lt;",   x, fixed = TRUE)
   x <- gsub(">",  "&gt;",   x, fixed = TRUE)
   x <- gsub("\"", "&quot;", x, fixed = TRUE)

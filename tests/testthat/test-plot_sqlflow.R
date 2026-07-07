@@ -84,6 +84,30 @@ test_that("graph_to_dot HTML-escapes special characters in labels", {
   expect_true(grepl("a&amp;b", lbl, fixed = TRUE))
 })
 
+test_that("html_esc collapses control characters that would break HTML labels", {
+  # A raw newline / tab / CR inside a Graphviz HTML-like label attribute
+  # (e.g. TOOLTIP carrying a multi-line SQL expression) makes Graphviz reject
+  # the whole node label. html_esc must neutralise them to a space.
+  expect_equal(html_esc("a\nb"),   "a b")
+  expect_equal(html_esc("a\r\nb"), "a b")
+  expect_equal(html_esc("a\tb"),   "a b")
+  expect_false(grepl("[[:cntrl:]]", html_esc("SUM(x)\nOVER (ORDER BY d)")))
+})
+
+test_that("stage labels with newline-bearing expressions contain no raw control chars", {
+  # Simulate a multi-line SELECT-list expression reaching the renderer.
+  html <- html_stage_label(
+    display_name = "result", role = "output",
+    columns_tbl = tibble::tibble(
+      col_name = "adj",
+      expr = "CASE\n  WHEN status = 1\n  THEN amount\n  ELSE 0 END",
+      transform_type = "case"
+    ),
+    transform_label = ""
+  )
+  expect_false(grepl("[[:cntrl:]]", html))
+})
+
 test_that("port_id normalises column names to valid Graphviz identifiers", {
   expect_equal(port_id("order_id"),    "order_id")
   expect_equal(port_id("order.id"),    "order_id")
