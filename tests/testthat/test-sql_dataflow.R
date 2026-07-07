@@ -257,3 +257,15 @@ test_that("qualification failure names the unresolvable alias", {
   expect_length(qual, 1L)
   expect_match(qual, "b2", fixed = TRUE)
 })
+
+test_that("check_setup reports each link and passes in a healthy env", {
+  skip_if_not(sqlglot_available(), "sqlglot not available")
+  out <- capture.output(res <- check_setup())
+  txt <- paste(out, collapse = "\n")
+  expect_match(txt, "reticulate installed")
+  expect_match(txt, "sqlglot importable")
+  expect_match(txt, "bundled module found")
+  expect_match(txt, "isolated child session works")
+  expect_match(txt, "end-to-end parse works")
+  expect_true(all(res))
+})

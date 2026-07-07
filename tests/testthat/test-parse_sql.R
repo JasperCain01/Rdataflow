@@ -293,3 +293,42 @@ test_that("UPDATE via a FROM alias resolves to the underlying table", {
   expect_match(st$output_table, "orders")
   expect_match(st$stages[[1]]$name, "orders")
 })
+
+# --- find_py_path robustness --------------------------------------------------
+
+test_that("find_py_path works when the working directory is elsewhere", {
+  # Regression: under devtools::load_all(), moving the session's working
+  # directory away from the package tree made the walk-up search go blind
+  # and parse_sql() abort with "Could not locate the bundled ... module".
+  old_wd <- setwd(tempdir())
+  on.exit(setwd(old_wd), add = TRUE)
+  p <- find_py_path()
+  expect_true(file.exists(file.path(p, "rdataflow_sqlglot.py")))
+})
+
+test_that("RDATAFLOW_PY_PATH overrides module discovery", {
+  d <- file.path(tempdir(), "custom_py_dir")
+  dir.create(d, showWarnings = FALSE)
+  file.copy(file.path(find_py_path(), "rdataflow_sqlglot.py"), d,
+            overwrite = TRUE)
+  old <- Sys.getenv("RDATAFLOW_PY_PATH", unset = NA)
+  Sys.setenv(RDATAFLOW_PY_PATH = d)
+  on.exit({
+    if (is.na(old)) Sys.unsetenv("RDATAFLOW_PY_PATH")
+    else Sys.setenv(RDATAFLOW_PY_PATH = old)
+    unlink(d, recursive = TRUE)
+  }, add = TRUE)
+  expect_equal(normalizePath(find_py_path()), normalizePath(d))
+})
+
+test_that("a broken RDATAFLOW_PY_PATH falls back and the error lists it", {
+  old <- Sys.getenv("RDATAFLOW_PY_PATH", unset = NA)
+  Sys.setenv(RDATAFLOW_PY_PATH = file.path(tempdir(), "nowhere"))
+  on.exit({
+    if (is.na(old)) Sys.unsetenv("RDATAFLOW_PY_PATH")
+    else Sys.setenv(RDATAFLOW_PY_PATH = old)
+  }, add = TRUE)
+  # Fallback: the real module is still found via the package itself.
+  p <- find_py_path()
+  expect_true(file.exists(file.path(p, "rdataflow_sqlglot.py")))
+})

@@ -60,31 +60,75 @@ load_py_module <- function() {
   mod
 }
 
-# Locate the directory containing the bundled Python module. Prefer the
-# installed package location; otherwise walk up from the working directory
-# looking for inst/python (so the module is found under devtools::load_all(),
-# direct sourcing, or testthat, which runs from tests/testthat/).
+# Locate the directory containing the bundled Python module. Tries, in
+# order: an explicit RDATAFLOW_PY_PATH override, the installed package
+# location, the loaded package's own directory (robust under
+# devtools::load_all() even after setwd() elsewhere), and finally a bounded
+# walk up from the working directory looking for inst/python.
 find_py_path <- function() {
   module_file <- "rdataflow_sqlglot.py"
+  tried <- character()
 
-  installed <- system.file("python", package = "Rdataflow")
-  if (nzchar(installed) && file.exists(file.path(installed, module_file))) {
-    return(installed)
+  has_module <- function(dir) {
+    length(dir) == 1L && !is.na(dir) && nzchar(dir) &&
+      file.exists(file.path(dir, module_file))
   }
 
-  # Walk up a bounded number of parent directories from the working dir.
+  # 0. Explicit override, for locked-down or hand-assembled installs.
+  override <- Sys.getenv("RDATAFLOW_PY_PATH", "")
+  if (nzchar(override)) {
+    if (has_module(override)) return(override)
+    tried <- c(tried, paste0(override, "  [from RDATAFLOW_PY_PATH]"))
+  }
+
+  # 1. Installed package: inst/python installs to <library>/Rdataflow/python.
+  installed <- system.file("python", package = "Rdataflow")
+  if (has_module(installed)) return(installed)
+  if (nzchar(installed)) tried <- c(tried, installed)
+
+  # 2. The loaded package's own directory. Works for a regular install AND
+  #    for devtools::load_all() (pkgload stores the absolute source path),
+  #    regardless of what the working directory is by the time we're called.
+  pkg_dir <- tryCatch(
+    getNamespaceInfo(asNamespace("Rdataflow"), "path"),
+    error = function(e) NULL
+  )
+  if (is.null(pkg_dir) || !nzchar(pkg_dir %||% "")) {
+    pkg_dir <- tryCatch(path.package("Rdataflow", quiet = TRUE),
+                        error = function(e) NULL)
+  }
+  if (!is.null(pkg_dir) && length(pkg_dir) == 1L && nzchar(pkg_dir)) {
+    for (cand in c(file.path(pkg_dir, "python"),
+                   file.path(pkg_dir, "inst", "python"))) {
+      if (has_module(cand)) return(cand)
+      tried <- c(tried, cand)
+    }
+  }
+
+  # 3. Walk up a bounded number of parent directories from the working dir
+  #    (covers running from a source checkout without load_all()).
   dir <- normalizePath(getwd(), mustWork = FALSE)
   for (i in seq_len(6L)) {
     candidate <- file.path(dir, "inst", "python")
-    if (file.exists(file.path(candidate, module_file))) {
-      return(candidate)
-    }
+    if (has_module(candidate)) return(candidate)
     parent <- dirname(dir)
     if (identical(parent, dir)) break  # reached filesystem root
     dir <- parent
   }
+  tried <- c(tried, file.path(normalizePath(getwd(), mustWork = FALSE),
+                              "inst", "python (and up to 5 parents)"))
 
-  rlang::abort("Could not locate the bundled 'rdataflow_sqlglot.py' module.")
+  rlang::abort(paste0(
+    "Could not locate the bundled 'rdataflow_sqlglot.py' module. Looked in:\n",
+    paste0("  - ", unique(tried), collapse = "\n"),
+    "\n",
+    "If the package came from a copied source tree, check that ",
+    "inst/python/rdataflow_sqlglot.py survived the copy (some transfer ",
+    "tools strip .py files). A normal install places it at ",
+    "<library>/Rdataflow/python/. As a last resort, set the environment ",
+    "variable RDATAFLOW_PY_PATH to the directory containing the file. ",
+    "Run check_setup() for a full diagnosis."
+  ))
 }
 
 #' Parse a SQL script into per-statement lineage information

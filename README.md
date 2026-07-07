@@ -48,6 +48,30 @@ library(Rdataflow)
 install_sqlglot()  # installs into reticulate's managed Python environment
 ```
 
+### Troubleshooting
+
+If parsing fails, run `check_setup()` — it tests every link in the chain
+(reticulate → Python → sqlglot → bundled module → child session → full
+parse) and the first `FAILED` line names the broken one:
+
+```r
+check_setup()
+#> reticulate installed              ok
+#> Python found                      ok  (C:/Program Files/Python311/python.exe)
+#> sqlglot importable                ok  (30.12.0)
+#> bundled module found              ok  (C:/R/library/Rdataflow/python)
+#> isolated child session works      ok
+#> end-to-end parse works            ok
+```
+
+If `bundled module found` fails (e.g. the package was assembled from a
+copied source tree and `inst/python/rdataflow_sqlglot.py` didn't survive
+the transfer), point the package at the file directly:
+
+```r
+Sys.setenv(RDATAFLOW_PY_PATH = "path/to/dir/containing/rdataflow_sqlglot.py")
+```
+
 ## Quick start
 
 ```r

@@ -85,7 +85,24 @@
   predicates with the full text on hover; `explain_sqlflow()` narrates them
   ("keeps distinct rows", "keeps top 100", "filters groups: HAVING ...").
 
+### New features (setup & diagnosis)
+
+* `check_setup()` diagnoses the parsing chain link by link — reticulate,
+  Python, sqlglot (with version), the bundled Python module, the isolated
+  child session, and an end-to-end parse — printing an `ok`/`FAILED` line
+  per step so the first failure names the broken link.
+
+* The bundled Python module can be pointed at directly with the
+  `RDATAFLOW_PY_PATH` environment variable when automatic discovery is
+  impossible (e.g. a hand-assembled install on a locked-down machine).
+
 ### Bug fixes
+
+* `find_py_path()` now locates the bundled Python module via the loaded
+  package's own directory, so `devtools::load_all()` followed by `setwd()`
+  to an analysis folder no longer aborts with "Could not locate the
+  bundled 'rdataflow_sqlglot.py' module". When discovery still fails, the
+  error lists every location searched and how to fix it.
 
 * Typographic ("smart") punctuation — the substitutions Word, Outlook, and
   OneNote make when SQL passes through them — is normalised outside
