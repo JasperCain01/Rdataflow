@@ -195,3 +195,65 @@ test_that("explain_sqlflow surfaces the skip log like sql_dataflow", {
   sql <- "EXEC sp_executesql @q;\nSELECT a INTO #x FROM dbo.t;"
   expect_warning(explain_sqlflow(sql, schema = s), "unrecognised statement")
 })
+
+test_that("read_sql falls back to Windows-1252 for non-UTF-8 files", {
+  # 0x91/0x92 are cp1252 curly quotes; 0x96 an en-dash. As UTF-8 these bytes
+  # are invalid and readLines() would truncate the line at the first one.
+  f <- tempfile(fileext = ".sql")
+  bytes <- c(
+    charToRaw("SELECT a FROM t WHERE b = "),
+    as.raw(0x91), charToRaw("Complaint"), as.raw(0x92),
+    charToRaw(" -- July "), as.raw(0x96)
+  )
+  writeBin(bytes, f)
+  txt <- read_sql(f)
+  expect_true(validUTF8(txt))
+  expect_match(txt, "Complaint", fixed = TRUE)
+  # nothing truncated: the en-dash after the literal survived
+  expect_match(txt, "July", fixed = TRUE)
+  unlink(f)
+})
+
+test_that("smart-quoted NHS-style SQL parses end-to-end with a real WHERE", {
+  skip_if_not(sqlglot_available(), "sqlglot not available")
+  s <- schema_from_list(list(
+    "dbo.compl_main"    = c(recordid = "INT", com_type = "VARCHAR"),
+    "dbo.code_com_type" = c(code = "VARCHAR", description = "VARCHAR"),
+    "dbo.link_compl"    = c(com_id = "INT", lcom_dreceived = "DATETIME")
+  ))
+  sql <- paste(
+    "SELECT main.recordid,",
+    "  ct.description as comtype_description,",
+    "  linked.lcom_dreceived as date_received",
+    "FROM NUH_datix.dbo.compl_main as main with (nolock)",
+    "left join NUH_datix.dbo.code_com_type as ct with (nolock) on ct.code=main.com_type",
+    "left join NUH_datix.dbo.link_compl as linked with (nolock) on linked.com_id=main.recordid",
+    "where ct.description = ‘Complaint’",
+    "  and linked.lcom_dreceived >= ‘2019-04-01 00:00:00’",
+    ";",
+    sep = "\n"
+  )
+  parsed <- parse_sql(sql, schema = s)
+  st <- parsed$statements[[1]]
+  stg <- st$stages[[1]]
+  expect_length(stg$sources, 3L)
+  expect_length(stg$joins, 2L)
+  # the WHERE survives as proper string/date literals, not identifiers
+  expect_match(stg$where, "'Complaint'", fixed = TRUE)
+  expect_match(stg$where, "2019-04-01 00:00:00", fixed = TRUE)
+})
+
+test_that("qualification failure names the unresolvable alias", {
+  skip_if_not(sqlglot_available(), "sqlglot not available")
+  s <- schema_from_list(list(
+    "dbo.a" = c(id = "INT"),
+    "dbo.b" = c(id = "INT", descr = "VARCHAR")
+  ))
+  # alias declared as `bee` but referenced as `b2` — a typo the message
+  # should point at
+  sql <- "SELECT b2.descr FROM dbo.a AS a JOIN dbo.b AS bee ON b2.id = a.id"
+  parsed <- suppressWarnings(parse_sql(sql, schema = s))
+  qual <- grep("qualification failed", parsed$skipped, value = TRUE)
+  expect_length(qual, 1L)
+  expect_match(qual, "b2", fixed = TRUE)
+})

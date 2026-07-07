@@ -773,9 +773,16 @@ def extract_lineage(sql, schema=None, dialect="tsql"):
             if schema:
                 stmt = qualify(stmt, schema=schema, dialect=dialect)
         except Exception as e:
-            skipped.append("schema qualification failed (%s); lineage may "
-                           "be partial and * is not expanded"
-                           % type(e).__name__)
+            # Include the qualifier's own message: it names the alias or
+            # column it could not resolve, which is exactly what the user
+            # needs to spot a typo (e.g. "AS com_type" referenced as
+            # "comtype").
+            detail = " ".join(str(e).split())
+            if len(detail) > 160:
+                detail = detail[:157] + "..."
+            skipped.append("schema qualification failed (%s: %s); lineage "
+                           "may be partial and * is not expanded"
+                           % (type(e).__name__, detail))
         # Wrap individual statement extraction so one bad statement (e.g. a
         # deeply nested expression that survived parsing but breaks traversal)
         # does not abort processing of the remaining statements.

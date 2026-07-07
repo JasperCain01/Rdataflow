@@ -24,7 +24,12 @@ ready for \code{\link[=sql_dataflow]{sql_dataflow()}}.
 \details{
 Encoding detection: a UTF-16 LE/BE or UTF-8 BOM is honoured; without a
 BOM, a NUL byte early in the file is taken as BOM-less UTF-16 LE;
-otherwise the file is read as UTF-8.
+otherwise the file is read as UTF-8 — unless its bytes are not valid
+UTF-8, in which case it is read as Windows-1252 (the classic SSMS /
+Notepad "ANSI" save format). Without that fallback, \code{readLines()}
+silently truncates every line at the first high byte (a curly quote,
+en-dash, pound sign, ...), chopping \code{WHERE} clauses mid-expression and
+unbalancing quotes for the rest of the script.
 }
 \examples{
 \dontrun{

@@ -24,7 +24,12 @@
 #'
 #' Encoding detection: a UTF-16 LE/BE or UTF-8 BOM is honoured; without a
 #' BOM, a NUL byte early in the file is taken as BOM-less UTF-16 LE;
-#' otherwise the file is read as UTF-8.
+#' otherwise the file is read as UTF-8 — unless its bytes are not valid
+#' UTF-8, in which case it is read as Windows-1252 (the classic SSMS /
+#' Notepad "ANSI" save format). Without that fallback, `readLines()`
+#' silently truncates every line at the first high byte (a curly quote,
+#' en-dash, pound sign, ...), chopping `WHERE` clauses mid-expression and
+#' unbalancing quotes for the rest of the script.
 #'
 #' @param path Path to a `.sql` file.
 #' @return A length-1 character string containing the full SQL script.
@@ -52,6 +57,19 @@ read_sql <- function(path) {
     else "UTF-16LE"
   } else {
     "UTF-8"   # also covers the UTF-8 BOM, stripped below
+  }
+
+  if (identical(encoding, "UTF-8")) {
+    # Validate the assumption: a Windows-1252 file (the classic SSMS /
+    # Notepad "ANSI" default) read as UTF-8 makes readLines() silently
+    # truncate each line at the first high byte — curly quote, en-dash,
+    # pound sign — chopping WHERE clauses and unbalancing quotes. The
+    # UTF-16 sniff above already routed NUL-bearing files away from this
+    # branch, so rawToChar() is safe here.
+    all_bytes <- readBin(path, "raw", n = file.size(path))
+    if (length(all_bytes) > 0L && !all(validUTF8(rawToChar(all_bytes)))) {
+      encoding <- "windows-1252"
+    }
   }
 
   con <- file(path, encoding = encoding)

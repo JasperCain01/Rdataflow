@@ -151,3 +151,45 @@ test_that("nested block comments are handled", {
   out2 <- split_statements("SELECT 1 /* a /* b; */ c; */ FROM t; SELECT 2")
   expect_equal(nrow(out2), 2L)
 })
+
+# --- Typographic ("smart") punctuation normalisation -------------------------
+
+test_that("curly-quoted string literals are normalised to straight quotes", {
+  out <- split_statements(
+    "SELECT a FROM t WHERE b = ‘Complaint’"
+  )
+  expect_equal(out$text, "SELECT a FROM t WHERE b = 'Complaint'")
+})
+
+test_that("a semicolon inside a curly-quoted literal does not split", {
+  out <- split_statements(
+    "SELECT ‘a;b’ AS x;\nSELECT 2"
+  )
+  expect_equal(nrow(out), 2L)
+  expect_equal(out$text[1], "SELECT 'a;b' AS x")
+})
+
+test_that("a straight quote inside a curly-quoted literal is escaped", {
+  out <- split_statements("SELECT ‘it's’ AS x")
+  expect_equal(out$text, "SELECT 'it''s' AS x")
+})
+
+test_that("curly quotes inside a straight-quoted literal stay as content", {
+  out <- split_statements("SELECT 'he said ‘hi’' AS x")
+  expect_equal(out$text, "SELECT 'he said ‘hi’' AS x")
+})
+
+test_that("curly double quotes become quoted identifiers", {
+  out <- split_statements("SELECT “my col” FROM t")
+  expect_equal(out$text, 'SELECT "my col" FROM t')
+})
+
+test_that("non-breaking spaces are normalised outside strings", {
+  out <- split_statements("SELECT a FROM t")
+  expect_equal(out$text, "SELECT a FROM t")
+})
+
+test_that("curly quotes inside comments are left untouched", {
+  out <- split_statements("-- note: ‘quoted’\nSELECT a FROM t")
+  expect_match(out$text, "‘quoted’", fixed = TRUE)
+})

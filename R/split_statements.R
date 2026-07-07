@@ -18,6 +18,17 @@
 #' appear alone on a line); an optional repeat count (`GO 5`) is consumed
 #' with it. Original text (including comments) is preserved in each chunk.
 #'
+#' Typographic ("smart") punctuation -- the kind Word, Outlook, and OneNote
+#' substitute when SQL passes through them -- is normalised outside
+#' comments: curly single quotes (U+2018/U+2019) open/close a string
+#' literal and are emitted as `'`, curly double quotes (U+201C/U+201D) as
+#' `"`, and non-breaking spaces (U+00A0) become plain spaces. A straight
+#' `'` *inside* a curly-quoted literal is escaped to `''` so the resulting
+#' literal stays valid; curly quotes inside a straight-quoted literal are
+#' left untouched (they are content). Without this, a curly-quoted literal
+#' reaches the SQL parser as garbage and a `;` inside one would split the
+#' statement in two.
+#'
 #' @param sql A length-1 character vector containing the full SQL script.
 #'
 #' @return A tibble with columns:
@@ -106,6 +117,24 @@ split_statements <- function(sql) {
         buf <- c(buf, ch)
         i <- i + 1L
         state <- "quoted_ident"
+
+      # --- Typographic quotes / spaces (Word, Outlook, OneNote artefacts)
+      } else if (ch %in% c("\u2018", "\u2019")) {
+        # Curly single quote opens a string literal; emit the ASCII form.
+        buf <- c(buf, "'")
+        i <- i + 1L
+        state <- "curly_string"
+
+      } else if (ch %in% c("\u201C", "\u201D")) {
+        # Curly double quote opens a quoted identifier; emit the ASCII form.
+        buf <- c(buf, '"')
+        i <- i + 1L
+        state <- "curly_dquote"
+
+      } else if (ch == "\u00A0") {
+        # Non-breaking space: normalise to a plain space.
+        buf <- c(buf, " ")
+        i <- i + 1L
 
       # --- Semicolon terminator
       } else if (ch == ";") {
@@ -203,6 +232,33 @@ split_statements <- function(sql) {
         buf <- c(buf, ch2)
         i <- i + 1L
       }
+
+    } else if (state == "curly_string") {
+      # A string literal opened by a typographic quote closes at the next
+      # typographic quote (either direction). Emit ASCII quotes, and escape
+      # any straight ' inside so the normalised literal stays valid.
+      if (ch %in% c("\u2018", "\u2019")) {
+        buf <- c(buf, "'")
+        state <- "normal"
+      } else if (ch == "'") {
+        buf <- c(buf, "'", "'")
+      } else {
+        buf <- c(buf, ch)
+      }
+      i <- i + 1L
+
+    } else if (state == "curly_dquote") {
+      # A quoted identifier opened by a typographic double quote; same
+      # normalisation as curly_string but with the double-quote forms.
+      if (ch %in% c("\u201C", "\u201D")) {
+        buf <- c(buf, '"')
+        state <- "normal"
+      } else if (ch == '"') {
+        buf <- c(buf, '"', '"')
+      } else {
+        buf <- c(buf, ch)
+      }
+      i <- i + 1L
     }
   }
 

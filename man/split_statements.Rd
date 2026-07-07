@@ -30,3 +30,15 @@ is the first token on its line (matching SQL Server's rule that \code{GO} must
 appear alone on a line); an optional repeat count (\verb{GO 5}) is consumed
 with it. Original text (including comments) is preserved in each chunk.
 }
+\details{
+Typographic ("smart") punctuation -- the kind Word, Outlook, and OneNote
+substitute when SQL passes through them -- is normalised outside
+comments: curly single quotes (U+2018/U+2019) open/close a string
+literal and are emitted as \verb{'}, curly double quotes (U+201C/U+201D) as
+\verb{"}, and non-breaking spaces (U+00A0) become plain spaces. A straight
+\verb{'} \emph{inside} a curly-quoted literal is escaped to \code{''} so the resulting
+literal stays valid; curly quotes inside a straight-quoted literal are
+left untouched (they are content). Without this, a curly-quoted literal
+reaches the SQL parser as garbage and a \verb{;} inside one would split the
+statement in two.
+}

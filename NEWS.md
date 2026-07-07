@@ -87,6 +87,25 @@
 
 ### Bug fixes
 
+* Typographic ("smart") punctuation — the substitutions Word, Outlook, and
+  OneNote make when SQL passes through them — is normalised outside
+  comments: curly single/double quotes become `'`/`"` (a straight `'`
+  inside a curly-quoted literal is escaped to `''`), and non-breaking
+  spaces become plain spaces. Previously `WHERE x = ‘Complaint’` reached
+  sqlglot as a bracket identifier and a `;` inside a curly-quoted literal
+  split the statement in two.
+
+* `read_sql()` falls back to Windows-1252 when a BOM-less file is not
+  valid UTF-8 (the classic SSMS / Notepad "ANSI" save format). Previously
+  `readLines()` silently truncated each line at the first high byte —
+  curly quote, en-dash, pound sign — chopping `WHERE` clauses and
+  unbalancing quotes for the rest of the script.
+
+* Schema-qualification failures now include the qualifier's own message
+  (e.g. `Column 'description' could not be resolved for table: 'comtype'`)
+  instead of just the exception class, so alias typos are findable from
+  the warning.
+
 * Statements preceded by a comment are handled by the native extractors:
   a header comment attached to a `DECLARE`/`SET` no longer prevents
   variable registration (previously every downstream `@var` went
